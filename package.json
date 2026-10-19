@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "echo 'Do not use this command, only use lint to check'",
-    "build": "echo 'Do not use this command, only use lint to check'",
+    "build": "tsgo -p tsconfig.check.json && vite build",
     "lint": "tsgo -p tsconfig.check.json; npx biome lint; .rules/check.sh;npx tailwindcss -i ./src/index.css -o /dev/null 2>&1 | grep -E '^(CssSyntaxError|Error):.*' || true;.rules/testBuild.sh"
   },
   "dependencies": {
@@ -85,6 +85,7 @@
     "@testing-library/user-event": "^14.6.4",
     "@types/bmapgl": "^0.0.7",
     "@types/lodash": "^4.17.24",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
     "@types/video-react": "^0.15.8",

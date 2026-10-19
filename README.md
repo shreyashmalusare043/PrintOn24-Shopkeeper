@@ -96,4 +96,12 @@ You can also check the help documentation: Download and Building the app（ [htt
 
 ## Deployment
 
-This is a single-page application. Static hosts must serve `index.html` for app routes so refreshing a page such as `/shop/SHOPCODE` does not return a server-side 404. The included `public/_redirects` supports Netlify and Cloudflare Pages, and `vercel.json` configures the equivalent Vercel rewrite. Configure `VITE_MAPBOX_TOKEN` in the hosting environment to enable Mapbox; without it, the map uses OpenStreetMap.
+This is a single-page application. Static hosts must serve `index.html` for app routes so refreshing a page such as `/shop/SHOPCODE` does not return a server-side 404. The included `public/_redirects` supports Netlify and Cloudflare Pages, and `vercel.json` configures the equivalent Vercel rewrite.
+
+Set these variables in the hosting provider's environment settings (the local `.env` file is not committed):
+
+- `VITE_SUPABASE_URL` — required; the Supabase project URL.
+- `VITE_SUPABASE_ANON_KEY` — required; the Supabase anon/publishable key, never the service-role key.
+- `VITE_MAPBOX_TOKEN` — optional; without it, the map uses OpenStreetMap.
+
+Use `pnpm install --frozen-lockfile` and `pnpm run build`, and publish the `dist` directory. Apply the SQL migrations in `supabase/migrations` to the Supabase project before using the app.

@@ -3,7 +3,6 @@ import { useShopkeeper } from '@/contexts/ShopkeeperContext';
 import { shopkeeperApi, generateShopCode } from '@/services/shopkeeperApi';
 import type { ShopPC, ShopQR, ShopSubscription } from '@/types/shopkeeper';
 import QRCodeDataUrl from '@/components/ui/qrcodedataurl';
-// @ts-expect-error qrcode does not provide bundled TypeScript declarations
 import QRCode from 'qrcode';
 import { StandeePoster } from '@/components/standee/StandeePoster';
 import { Card, CardContent } from '@/components/ui/card';
