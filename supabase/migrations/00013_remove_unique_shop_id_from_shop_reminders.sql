@@ -1,0 +1,2 @@
+ALTER TABLE shop_reminders DROP CONSTRAINT IF EXISTS shop_reminders_shop_id_key;
+CREATE UNIQUE INDEX IF NOT EXISTS shop_reminders_shop_printer_idx ON shop_reminders (shop_id, printer_id) WHERE printer_id IS NOT NULL;

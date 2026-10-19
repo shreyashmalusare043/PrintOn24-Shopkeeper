@@ -1,0 +1,1 @@
+ALTER TABLE shop_reminders ADD COLUMN IF NOT EXISTS title text DEFAULT 'Toner Cartridge & Paper Restock Alert';

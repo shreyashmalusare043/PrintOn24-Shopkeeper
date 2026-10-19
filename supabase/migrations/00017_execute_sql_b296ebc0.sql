@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS idx_print_orders_shop_status_created ON public.print_orders (shop_id, order_status, created_at DESC); CREATE INDEX IF NOT EXISTS idx_print_orders_shop_order_status ON public.print_orders (shop_id, order_status); CREATE INDEX IF NOT EXISTS idx_uploaded_documents_order_id ON public.uploaded_documents (order_id);
