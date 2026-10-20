@@ -24,7 +24,7 @@ export const PublicNavbar: React.FC = () => {
         {/* Brand Logo */}
         <Link to="/" className="flex items-center group select-none">
           <img
-            src="https://miaoda-edit-image.s3cdn.medo.dev/eteq08019atd/IMG-ezcrheaf25mo.png"
+            src="/images/logo/printon24-logo.png"
             alt="printOn24"
             className="h-10 sm:h-11 max-w-[170px] object-contain shrink-0"
           />
@@ -79,7 +79,7 @@ export const PublicNavbar: React.FC = () => {
                 <div className="flex items-center justify-between pb-6 border-b border-neutral-100">
                   <Link to="/" onClick={() => setMobileOpen(false)} className="flex items-center">
                     <img
-                      src="https://miaoda-edit-image.s3cdn.medo.dev/eteq08019atd/IMG-ezcrheaf25mo.png"
+                      src="/images/logo/printon24-logo.png"
                       alt="printOn24"
                       className="h-9 max-w-[150px] object-contain shrink-0"
                     />

@@ -112,7 +112,7 @@ export const LandingPage: React.FC = () => {
             <div className="lg:col-span-6 relative flex items-center justify-center">
               <div className="relative w-full max-w-lg lg:max-w-none mx-auto flex items-center justify-center border-0 outline-none ring-0 shadow-none p-0 bg-transparent">
                 <img
-                  src="/public/Print Workflow Orbit Illustration.png"
+                  src="/Print Workflow Orbit Illustration.png"
                   alt="printOn24 Smart Printing Solutions - Print your documents anytime, anywhere"
                   className="w-full max-w-md lg:max-w-xl h-auto object-contain transition duration-500 drop-shadow-md select-none pointer-events-none border-0 outline-none ring-0"
                   data-editor-config="%7B%22defaultSrc%22%3A%22https%3A%2F%2Fmiaoda-edit-image.s3cdn.medo.dev%2Feteq08019atd%2FIMG-f01dhccs9rls.png%22%7D"

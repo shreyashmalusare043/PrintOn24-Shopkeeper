@@ -27,7 +27,7 @@ import {
 
 // Easily editable & replaceable visual composition graphic for Login Page
 export const LOGIN_GRAPHIC_URL =
-  '/public/Transparent 3D Printer Document Orbit.png';
+  '/Transparent 3D Printer Document Orbit.png';
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
@@ -209,7 +209,7 @@ export const LoginPage: React.FC = () => {
                 <div className="text-center mb-6">
                   <Link to="/" className="inline-block">
                     <img
-                      src="https://miaoda-edit-image.s3cdn.medo.dev/eteq08019atd/IMG-ezcrheaf25mo.png"
+                      src="/images/logo/printon24-logo.png"
                       alt="printOn24"
                       className="h-10 sm:h-12 mx-auto object-contain"
                     />

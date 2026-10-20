@@ -26,7 +26,7 @@ export const PublicFooter: React.FC = () => {
           <div className="lg:col-span-2 space-y-3">
             <Link to="/" className="inline-flex items-center select-none">
               <img
-                src="/public/White printOn24© Logo with Sweeping Osterisk.png"
+                src="/White printOn24© Logo with Sweeping Osterisk.png"
                 alt="printOn24"
                 className="h-8 sm:h-9 max-w-[150px] object-contain shrink-0"
               />

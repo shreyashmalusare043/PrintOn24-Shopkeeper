@@ -1,3 +1,10 @@
+declare const Deno: {
+  serve(handler: (req: Request) => Response | Promise<Response>): void;
+  env: {
+    get(name: string): string | undefined;
+  };
+};
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
