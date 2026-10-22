@@ -60,6 +60,9 @@ export const LoginPage: React.FC = () => {
   useEffect(() => {
     shopkeeperApi.autoLoginTrustedDevice().then((res) => {
       if (res.success && res.user) {
+        if (res.qzAuthWarning) {
+          toast.warning(`Signed in, but QZ printing authorization failed: ${res.qzAuthWarning}`);
+        }
         toast.success(`Welcome back, ${res.user.owner_name}! Automatically signed in on trusted device.`);
         navigate('/orders');
       }
@@ -79,6 +82,9 @@ export const LoginPage: React.FC = () => {
       if (res.success) {
         if (res.isNewDevice) {
           toast.info('New device detected: A security alert has been dispatched to your email.');
+        }
+        if (res.qzAuthWarning) {
+          toast.warning(`Signed in, but QZ printing authorization failed: ${res.qzAuthWarning}`);
         }
         toast.success('Welcome back to printOn24!');
         navigate('/orders');

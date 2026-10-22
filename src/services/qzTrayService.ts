@@ -1,5 +1,6 @@
 import qz from 'qz-tray';
 import type { DetectedPrinter } from '@/types/shopkeeper';
+import { getQzAuthToken } from '@/lib/qzAuth';
 
 export type { DetectedPrinter };
 
@@ -85,6 +86,14 @@ const SUPABASE_ANON_KEY =
   (import.meta as any).env.VITE_SUPABASE_ANON_KEY ||
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFvZ2R6Y2d2a3dkbnBrZWVqcGVmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA4MzU3MTEsImV4cCI6MjEwNjQxMTcxMX0.PA7Wswd56WAAvvGxq3UAnrrhivnxzl7TQonpfHOnwSU';
 
+function getQzRequestHeaders(): Record<string, string> {
+  const token = getQzAuthToken();
+  if (!token) {
+    throw new Error('QZ authorization is missing. Sign in again to enable secure printing.');
+  }
+  return { 'x-qz-auth': token };
+}
+
 export function isPhysicalPrinter(name: string): boolean {
   if (!name) return false;
   const upper = name.toUpperCase();
@@ -127,6 +136,7 @@ class QzTrayService {
           fetch(`${SUPABASE_URL}/functions/v1/qz-sign?action=certificate`, {
             headers: {
               apikey: SUPABASE_ANON_KEY,
+              ...getQzRequestHeaders(),
               Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
             },
           })
@@ -148,6 +158,7 @@ class QzTrayService {
               headers: {
                 'Content-Type': 'application/json',
                 apikey: SUPABASE_ANON_KEY,
+                ...getQzRequestHeaders(),
                 Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
               },
               body: JSON.stringify({ request: toSign }),

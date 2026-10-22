@@ -56,7 +56,13 @@ interface ShopkeeperContextType {
     email: string,
     pass: string,
     rememberDevice?: boolean
-  ) => Promise<{ success: boolean; error?: string; isNewDevice?: boolean; user?: ShopkeeperUser }>;
+  ) => Promise<{
+    success: boolean;
+    error?: string;
+    isNewDevice?: boolean;
+    qzAuthWarning?: string;
+    user?: ShopkeeperUser;
+  }>;
   logout: () => void;
   refreshShopData: () => Promise<void>;
   t: (key: keyof typeof translations['en']) => string;
@@ -177,6 +183,7 @@ export const ShopkeeperProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       setPcs(pcList);
     } catch (err) {
       console.error('Failed to refresh PCs:', err);
+      toast.error(err instanceof Error ? err.message : 'Failed to load PC terminals');
     }
   }, [user?.shop_id]);
 
@@ -200,7 +207,11 @@ export const ShopkeeperProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
       const [shopData, pcList, reminderList, sub] = await Promise.all([
         shopkeeperApi.getShopProfile(user.shop_id),
-        shopkeeperApi.getShopPCs(user.shop_id),
+        shopkeeperApi.getShopPCs(user.shop_id).catch((err) => {
+          console.error('Failed to load PC terminals:', err);
+          toast.error(err instanceof Error ? err.message : 'Failed to load PC terminals');
+          return [];
+        }),
         shopkeeperApi.getReminders(user.shop_id),
         shopkeeperApi.getShopSubscription(user.shop_id),
       ]);
@@ -257,6 +268,7 @@ export const ShopkeeperProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       }
     } catch (err) {
       console.error('Error refreshing shop data:', err);
+      toast.error(err instanceof Error ? err.message : 'Failed to refresh shop data');
     }
   }, [user, refreshPrinters]);
 

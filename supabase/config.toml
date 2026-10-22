@@ -1,0 +1,5 @@
+[functions.qz-auth]
+verify_jwt = false
+
+[functions.qz-sign]
+verify_jwt = false

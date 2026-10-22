@@ -1,6 +1,7 @@
 import { supabase } from './supabase';
 import { localPrintAgent, type DetectedPrinter, type PrintJobPayload } from './localPrintAgent';
 import { isPhysicalPrinter, isAllowedVirtualPrinter } from './qzTrayService';
+import { clearQzAuthToken, issueQzAuthToken } from '@/lib/qzAuth';
 import type {
   ShopkeeperUser,
   ShopProfile,
@@ -122,7 +123,7 @@ export const shopkeeperApi = {
     email: string,
     password: string,
     rememberDevice = true
-  ): Promise<{ success: boolean; user?: ShopkeeperUser; error?: string; isNewDevice?: boolean }> {
+  ): Promise<{ success: boolean; user?: ShopkeeperUser; error?: string; isNewDevice?: boolean; qzAuthWarning?: string }> {
     try {
       const cleanEmail = email.trim().toLowerCase();
       const { data, error } = await supabase
@@ -223,13 +224,25 @@ export const shopkeeperApi = {
       }
 
       this.setCurrentUser(user);
-      return { success: true, user, isNewDevice };
+      let qzAuthWarning: string | undefined;
+      try {
+        await issueQzAuthToken({ email: cleanEmail, password });
+      } catch (err) {
+        qzAuthWarning = err instanceof Error ? err.message : 'Could not authorize QZ printing.';
+        console.error('QZ authorization setup failed:', err);
+      }
+      return { success: true, user, isNewDevice, qzAuthWarning };
     } catch (err: any) {
       return { success: false, error: err?.message || 'Login failed due to unexpected error.' };
     }
   },
 
-  async autoLoginTrustedDevice(): Promise<{ success: boolean; user?: ShopkeeperUser; error?: string }> {
+  async autoLoginTrustedDevice(): Promise<{
+    success: boolean;
+    user?: ShopkeeperUser;
+    error?: string;
+    qzAuthWarning?: string;
+  }> {
     try {
       const deviceTokenKey = 'printon24_trusted_device_token';
       const rawToken = localStorage.getItem(deviceTokenKey);
@@ -286,7 +299,14 @@ export const shopkeeperApi = {
         .eq('token_hash', tokenHash);
 
       this.setCurrentUser(user);
-      return { success: true, user };
+      let qzAuthWarning: string | undefined;
+      try {
+        await issueQzAuthToken({ trustedDeviceToken: rawToken });
+      } catch (err) {
+        qzAuthWarning = err instanceof Error ? err.message : 'Could not authorize QZ printing.';
+        console.error('QZ authorization setup failed for trusted device:', err);
+      }
+      return { success: true, user, qzAuthWarning };
     } catch {
       return { success: false };
     }
@@ -305,6 +325,7 @@ export const shopkeeperApi = {
       // Ignored
     } finally {
       this.setCurrentUser(null);
+      clearQzAuthToken();
     }
   },
 
@@ -500,7 +521,7 @@ export const shopkeeperApi = {
     password: string;
     city?: string;
     address: string;
-  }): Promise<{ success: boolean; user?: ShopkeeperUser; error?: string }> {
+  }): Promise<{ success: boolean; user?: ShopkeeperUser; error?: string; qzAuthWarning?: string }> {
     try {
       const cleanEmail = data.email.trim().toLowerCase();
 
@@ -615,7 +636,14 @@ export const shopkeeperApi = {
         role: 'shopkeeper',
       };
       this.setCurrentUser(user);
-      return { success: true, user };
+      let qzAuthWarning: string | undefined;
+      try {
+        await issueQzAuthToken({ email: cleanEmail, password: data.password });
+      } catch (err) {
+        qzAuthWarning = err instanceof Error ? err.message : 'Could not authorize QZ printing.';
+        console.error('QZ authorization setup failed after signup:', err);
+      }
+      return { success: true, user, qzAuthWarning };
     } catch (err: any) {
       return { success: false, error: err?.message || 'Failed to complete shopkeeper registration.' };
     }
@@ -798,7 +826,8 @@ export const shopkeeperApi = {
         .is('deleted_at', null)
         .order('is_default', { ascending: false });
 
-      if (error || !data) return [];
+      if (error) throw new Error(error.message);
+      if (!data) return [];
 
       // Evaluate dynamic online status strictly based on real heartbeat timestamp (45s cutoff)
       // Enabled/disabled is separate from online/offline connectivity
@@ -817,12 +846,12 @@ export const shopkeeperApi = {
           status: isOnline ? 'online' : 'offline',
         };
       });
-    } catch {
-      return [];
+    } catch (err) {
+      throw new Error(`Failed to load PC terminals: ${err instanceof Error ? err.message : String(err)}`);
     }
   },
 
-  async addShopPC(shopId: string, pcName: string, ipAddress: string): Promise<ShopPC | null> {
+  async addShopPC(shopId: string, pcName: string, ipAddress: string): Promise<ShopPC> {
     try {
       const newPcCode = `PC-${Math.floor(10 + Math.random() * 90)}`;
       const newPc: ShopPC = {
@@ -841,19 +870,24 @@ export const shopkeeperApi = {
         agent_version: '1.2.0',
         qr_code_data: `https://printon24.in/print?shop=${shopId}&pc=pc_${Date.now()}`,
       };
-      await supabase.from('shop_pcs').insert(newPc);
+      const { error } = await supabase.from('shop_pcs').insert(newPc);
+      if (error) throw new Error(error.message);
       return newPc;
-    } catch {
-      return null;
+    } catch (err) {
+      throw new Error(`Failed to register PC terminal: ${err instanceof Error ? err.message : String(err)}`);
     }
   },
 
   async addPC(shopId: string, pcName: string, ipAddress?: string): Promise<{ success: boolean; pc?: ShopPC; error?: string }> {
-    const pc = await this.addShopPC(shopId, pcName, ipAddress || '192.168.1.105');
-    if (pc) {
+    try {
+      const pc = await this.addShopPC(shopId, pcName, ipAddress || '192.168.1.105');
       return { success: true, pc };
+    } catch (err) {
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Failed to register PC terminal',
+      };
     }
-    return { success: false, error: 'Failed to register PC' };
   },
 
   async updatePcHeartbeat(pcId: string): Promise<boolean> {

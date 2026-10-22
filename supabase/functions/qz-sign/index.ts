@@ -7,9 +7,83 @@ declare const Deno: {
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-qz-auth',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 };
+
+const encoder = new TextEncoder();
+
+function decodeBase64Url(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+  const binary = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='));
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+async function verifyQzToken(token: string, secret: string): Promise<{ sub: string; shop_id: string } | null> {
+  try {
+    const [payloadPart, signaturePart] = token.split('.');
+    if (!payloadPart || !signaturePart) return null;
+
+    const key = await crypto.subtle.importKey(
+      'raw',
+      encoder.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    const signatureBytes = decodeBase64Url(signaturePart);
+    const signatureBuffer = new ArrayBuffer(signatureBytes.byteLength);
+    new Uint8Array(signatureBuffer).set(signatureBytes);
+    const isValid = await crypto.subtle.verify(
+      'HMAC',
+      key,
+      signatureBuffer,
+      encoder.encode(payloadPart)
+    );
+    if (!isValid) return null;
+
+    const payload = JSON.parse(new TextDecoder().decode(decodeBase64Url(payloadPart)));
+    if (
+      typeof payload.sub !== 'string' ||
+      typeof payload.shop_id !== 'string' ||
+      typeof payload.exp !== 'number' ||
+      payload.exp <= Math.floor(Date.now() / 1000)
+    ) {
+      return null;
+    }
+    return { sub: payload.sub, shop_id: payload.shop_id };
+  } catch {
+    return null;
+  }
+}
+
+async function isAccountActive(
+  userId: string,
+  shopId: string,
+  supabaseUrl: string,
+  serviceRoleKey: string
+): Promise<boolean> {
+  const accountUrl = new URL(`${supabaseUrl}/rest/v1/shopkeeper_accounts`);
+  accountUrl.searchParams.set('select', 'shop_id,status,is_active');
+  accountUrl.searchParams.set('id', `eq.${userId}`);
+  accountUrl.searchParams.set('limit', '1');
+  const response = await fetch(accountUrl, {
+    headers: {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+    },
+  });
+  if (!response.ok) throw new Error('Unable to verify shopkeeper account');
+  const accounts = await response.json();
+  const account = accounts[0];
+  return Boolean(
+    account &&
+      account.shop_id === shopId &&
+      account.status !== 'disabled' &&
+      account.status !== 'inactive' &&
+      account.is_active !== false
+  );
+}
 
 Deno.serve(async (req) => {
   // Handle CORS preflight requests
@@ -18,6 +92,24 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const tokenSecret = Deno.env.get('QZ_AUTH_SECRET');
+    const supabaseUrl = Deno.env.get('SUPABASE_URL');
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    const token = req.headers.get('x-qz-auth') || '';
+    if (!tokenSecret || tokenSecret.length < 32 || !supabaseUrl || !serviceRoleKey) {
+      return new Response('QZ authorization is not configured', {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'text/plain' },
+      });
+    }
+    const identity = await verifyQzToken(token, tokenSecret);
+    if (!identity || !(await isAccountActive(identity.sub, identity.shop_id, supabaseUrl, serviceRoleKey))) {
+      return new Response('Unauthorized or expired QZ authorization. Please sign in again.', {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'text/plain' },
+      });
+    }
+
     const url = new URL(req.url);
     const action = url.searchParams.get('action');
 
