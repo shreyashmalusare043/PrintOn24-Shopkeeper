@@ -325,7 +325,7 @@ export const GoForPrintModal: React.FC = () => {
                   </Label>
                   <button
                     type="button"
-                    onClick={refreshPrinters}
+                    onClick={() => refreshPrinters()}
                     className="text-[10px] text-primary hover:underline flex items-center gap-1 font-mono"
                   >
                     <RotateCw className="w-3 h-3" /> Rescan

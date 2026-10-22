@@ -1035,14 +1035,15 @@ export const shopkeeperApi = {
           };
 
           // Insert into Supabase shop_printers only if brand new
-          await supabase.from('shop_printers').insert(printerRecord);
+          const { error } = await supabase.from('shop_printers').insert(printerRecord);
+          if (error) throw new Error(`Could not save detected printer "${d.name}": ${error.message}`);
           syncedPrinters.push(printerRecord);
         }
       }
 
       return syncedPrinters;
-    } catch {
-      return this.getShopPrinters(shopId, pcId);
+    } catch (err) {
+      throw new Error(`Failed to sync QZ Tray printers: ${err instanceof Error ? err.message : String(err)}`);
     }
   },
 

@@ -71,7 +71,7 @@ interface ShopkeeperContextType {
   // Real-Time Hardware & "Go For Print" additions
   agentStatus: AgentStatus;
   realPrinters: ShopPrinter[];
-  refreshPrinters: () => Promise<void>;
+  refreshPrinters: (pcId?: string) => Promise<void>;
   refreshPcs: () => Promise<void>;
   isGoForPrintOpen: boolean;
   setIsGoForPrintOpen: (open: boolean) => void;
@@ -161,20 +161,24 @@ export const ShopkeeperProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     [language]
   );
 
-  const refreshPrinters = useCallback(async () => {
+  const refreshPrinters = useCallback(async (pcId?: string) => {
     if (!user?.shop_id) return;
     try {
       const activePcId = selectedPcId === 'all' ? undefined : selectedPcId;
-      let printers = await shopkeeperApi.getShopPrinters(user.shop_id, activePcId);
-      if (printers.length === 0) {
-        // Only run initial detection sync if DB has no configured printers for this shop yet
-        printers = await shopkeeperApi.syncDetectedPrinters(user.shop_id, activePcId || 'pc_01');
+      const currentPcId =
+        pcId || activePcId || pcs.find((pc) => pc.is_current_pc)?.id || pcs[0]?.id;
+
+      if (currentPcId) {
+        await shopkeeperApi.syncDetectedPrinters(user.shop_id, currentPcId);
       }
+
+      const printers = await shopkeeperApi.getShopPrinters(user.shop_id, activePcId);
       setRealPrinters(printers);
     } catch (err) {
       console.error('Failed to refresh printers:', err);
+      toast.error(err instanceof Error ? err.message : 'Failed to refresh printers');
     }
-  }, [user?.shop_id, selectedPcId]);
+  }, [user?.shop_id, selectedPcId, pcs]);
 
   const refreshPcs = useCallback(async () => {
     if (!user?.shop_id) return;
@@ -221,7 +225,8 @@ export const ShopkeeperProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       if (reminderList) setRemindersList(reminderList);
       if (sub) setSubscription(sub);
 
-      await refreshPrinters();
+      const currentPcId = pcList.find((pc) => pc.is_current_pc)?.id || pcList[0]?.id;
+      await refreshPrinters(currentPcId);
 
       // Check real printer reminders for global popup alert (Page Reminder / Ink Reminder)
       try {

@@ -741,11 +741,13 @@ export const GoForPrintPage: React.FC = () => {
                 size="sm"
                 onClick={async () => {
                   const list = await localPrintAgent.enumeratePrinters();
-                  refreshPrinters();
+                  await refreshPrinters();
                   if (list.length > 0) {
                     toast.success(`Connected to QZ Tray! Detected ${list.length} printer(s).`);
+                  } else if (!localPrintAgent.getStatus().connected) {
+                    toast.error(localPrintAgent.getStatus().error || 'QZ Tray is not connected.');
                   } else {
-                    toast.info('Queried QZ Tray. Make sure QZ Tray is running.');
+                    toast.warning('QZ Tray is connected, but no physical printers were detected. Check Windows printer settings.');
                   }
                 }}
                 className="h-8 text-xs font-semibold gap-1.5"

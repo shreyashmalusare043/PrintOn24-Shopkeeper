@@ -249,10 +249,9 @@ class QzTrayService {
     return {
       connected: active,
       version: qz.version || '2.2.6',
-      error: active
-        ? undefined
-        : this.lastError ||
-          'QZ Tray is not connected. Make sure QZ Tray is running in your PC system tray.',
+      error:
+        this.lastError ||
+        (!active ? 'QZ Tray is not connected. Make sure QZ Tray is running in your PC system tray.' : undefined),
       connectionInfo: connInfo,
       lastChecked: new Date().toISOString(),
       printerCount: this.lastPrinters.length,
@@ -403,7 +402,10 @@ class QzTrayService {
       const physicalPrinterList = rawPrinterList.filter((name) => isPhysicalPrinter(name));
 
       if (physicalPrinterList.length === 0) {
-        console.warn('0 physical printers detected. Virtual printers filtered out.');
+        this.lastError = rawPrinterList.length
+          ? 'QZ Tray found only virtual printers. Install or enable a physical printer in Windows.'
+          : 'QZ Tray is connected, but Windows reports no installed printers.';
+        console.warn(this.lastError);
         this.notifyPrinters([]);
         return [];
       }
@@ -463,6 +465,7 @@ class QzTrayService {
         };
       });
 
+      this.lastError = undefined;
       this.notifyPrinters(detectedPrinters);
       return detectedPrinters;
     } catch (err: any) {
