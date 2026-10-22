@@ -38,6 +38,7 @@ export const PrintersPage: React.FC = () => {
 
   const [scanning, setScanning] = useState(false);
   const [detectedPrinters, setDetectedPrinters] = useState<DetectedPrinter[]>([]);
+  const [detectionMessage, setDetectionMessage] = useState('');
 
   // ADD PRINTER MODAL
   const [addModalOpen, setAddModalOpen] = useState(false);
@@ -99,8 +100,21 @@ export const PrintersPage: React.FC = () => {
       // Filter out virtual/software printers strictly (XPS, PDF, OneNote, AnyDesk, Fax, etc.)
       const physicalOnly = list.filter((p) => isPhysicalPrinter(p.name));
       setDetectedPrinters(physicalOnly);
+      if (physicalOnly.length > 0) {
+        setDetectionMessage('');
+      } else {
+        const status = qzTrayService.getStatus();
+        const message = status.connected
+          ? status.error || 'QZ Tray is connected, but no physical printers were found in Windows.'
+          : status.error || 'QZ Tray is not connected. Start QZ Tray on this computer and sign in again.';
+        setDetectionMessage(message);
+        toast.warning(message);
+      }
       return physicalOnly;
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not scan printers through QZ Tray.';
+      setDetectionMessage(message);
+      toast.error(message);
       return [];
     } finally {
       setScanning(false);
@@ -746,7 +760,8 @@ export const PrintersPage: React.FC = () => {
                 </select>
               ) : (
                 <p className="text-[11px] text-muted-foreground font-sans">
-                  No new unconfigured physical printers detected on workstation. You can enter details manually below.
+                  {detectionMessage ||
+                    'No physical printers detected. Start QZ Tray on this computer, then select Rescan.'}
                 </p>
               )}
             </div>
