@@ -750,15 +750,23 @@ export const shopkeeperApi = {
           };
         }
       }
-      const { error } = await supabase.from('print_shops').update(dbPayload).eq('id', shopId);
+      const { data, error } = await supabase
+        .from('print_shops')
+        .update(dbPayload)
+        .eq('id', shopId)
+        .select('id')
+        .maybeSingle();
       if (error) {
         console.error('Error updating print shop profile:', error);
-        return false;
+        throw error;
+      }
+      if (!data) {
+        throw new Error(`No shop profile found for ID "${shopId}".`);
       }
       return true;
     } catch (err) {
       console.error('Exception in updateShopProfile:', err);
-      return false;
+      throw err;
     }
   },
 
@@ -4897,14 +4905,26 @@ The merchant is solely responsible for credentials assigned to their counter sta
   // ---------------- DYNAMIC PAPER TYPES & SPECIALIZED HIGHLIGHTING (Items 14, 15) ----------------
   async getDynamicPaperTypes(shopId: string): Promise<DynamicPaperType[]> {
     try {
-      const { data } = await supabase
+      const { data: settings, error: settingsError } = await supabase
         .from('shopkeeper_settings')
         .select('dynamic_paper_types')
         .eq('shop_id', shopId)
         .maybeSingle();
 
-      if (data?.dynamic_paper_types && Array.isArray(data.dynamic_paper_types) && data.dynamic_paper_types.length > 0) {
-        return data.dynamic_paper_types;
+      if (settingsError) throw settingsError;
+      if (settings?.dynamic_paper_types && Array.isArray(settings.dynamic_paper_types) && settings.dynamic_paper_types.length > 0) {
+        return settings.dynamic_paper_types;
+      }
+
+      const { data: pricing, error: pricingError } = await supabase
+        .from('shop_pricing')
+        .select('dynamic_paper_types')
+        .eq('shop_id', shopId)
+        .maybeSingle();
+
+      if (pricingError) throw pricingError;
+      if (pricing?.dynamic_paper_types && Array.isArray(pricing.dynamic_paper_types) && pricing.dynamic_paper_types.length > 0) {
+        return pricing.dynamic_paper_types;
       }
 
       const defaultTypes: DynamicPaperType[] = [
@@ -4922,26 +4942,34 @@ The merchant is solely responsible for credentials assigned to their counter sta
   },
 
   async saveDynamicPaperTypes(shopId: string, types: DynamicPaperType[]): Promise<boolean> {
-    try {
-      await supabase
+    const updatedAt = new Date().toISOString();
+    const { error: settingsError } = await supabase
         .from('shopkeeper_settings')
-        .update({
+        .upsert({
+          id: `set_${shopId}`,
+          shop_id: shopId,
           dynamic_paper_types: types,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('shop_id', shopId);
-
-      await supabase
-        .from('shop_pricing')
-        .update({
-          dynamic_paper_types: types,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('shop_id', shopId);
-      return true;
-    } catch {
-      return false;
+          updated_at: updatedAt,
+        }, { onConflict: 'shop_id' });
+    if (settingsError) {
+      console.error('Error saving dynamic paper types to shopkeeper_settings:', settingsError);
+      throw settingsError;
     }
+
+    const { error: pricingError } = await supabase
+        .from('shop_pricing')
+        .upsert({
+          id: `prc_${shopId}`,
+          shop_id: shopId,
+          dynamic_paper_types: types,
+          updated_at: updatedAt,
+        }, { onConflict: 'shop_id' });
+    if (pricingError) {
+      console.error('Error saving dynamic paper types to shop_pricing:', pricingError);
+      throw pricingError;
+    }
+
+    return true;
   },
 
   async getSpecializedPaperColors(shopId: string): Promise<Record<string, string>> {

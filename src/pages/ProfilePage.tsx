@@ -257,6 +257,10 @@ export const ProfilePage: React.FC = () => {
       } else {
         toast.error('Failed to update shop profile');
       }
+    } catch (err) {
+      console.error('Failed to save shop profile:', err);
+      const message = err instanceof Error ? err.message : 'Please try again.';
+      toast.error(`Failed to update shop profile: ${message}`);
     } finally {
       setSaving(false);
     }

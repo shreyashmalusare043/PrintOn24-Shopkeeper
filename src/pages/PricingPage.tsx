@@ -41,6 +41,7 @@ export const PricingPage: React.FC = () => {
 
   // Dynamic Paper Types (Item 14)
   const [paperTypes, setPaperTypes] = useState<DynamicPaperType[]>([]);
+  const [savingPaper, setSavingPaper] = useState(false);
   const [paperModalOpen, setPaperModalOpen] = useState(false);
   const [editingPaper, setEditingPaper] = useState<DynamicPaperType | null>(null);
   const [paperName, setPaperName] = useState('');
@@ -116,8 +117,19 @@ export const PricingPage: React.FC = () => {
     }
     if (!user?.shop_id) return;
 
-    const bwP = parseFloat(paperBwPrice) || 0;
-    const colP = parseFloat(paperColorPrice) || 0;
+    const bwP = Number(paperBwPrice);
+    const colP = Number(paperColorPrice);
+    if (!Number.isFinite(bwP) || !Number.isFinite(colP) || bwP < 0 || colP < 0) {
+      toast.error('Enter valid non-negative prices for both print modes.');
+      return;
+    }
+    const normalizedName = paperName.trim();
+    if (paperTypes.some((paper) =>
+      paper.id !== editingPaper?.id && paper.name.toLowerCase() === normalizedName.toLowerCase()
+    )) {
+      toast.error('A paper type with this name already exists.');
+      return;
+    }
 
     let updated: DynamicPaperType[];
     if (editingPaper) {
@@ -125,7 +137,7 @@ export const PricingPage: React.FC = () => {
         p.id === editingPaper.id
           ? {
               ...p,
-              name: paperName.trim(),
+              name: normalizedName,
               bw_price: bwP,
               color_price: colP,
               is_special: p.id === 'a4' ? false : paperIsSpecial,
@@ -134,12 +146,12 @@ export const PricingPage: React.FC = () => {
           : p
       );
     } else {
-      const newId = `pt_${Date.now()}_${paperName.trim().toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
+      const newId = `pt_${Date.now()}_${normalizedName.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
       updated = [
         ...paperTypes,
         {
           id: newId,
-          name: paperName.trim(),
+          name: normalizedName,
           bw_price: bwP,
           color_price: colP,
           is_special: paperIsSpecial,
@@ -148,13 +160,17 @@ export const PricingPage: React.FC = () => {
       ];
     }
 
-    setPaperTypes(updated);
-    setPaperModalOpen(false);
-    const ok = await shopkeeperApi.saveDynamicPaperTypes(user.shop_id, updated);
-    if (ok) {
-      toast.success(`Paper type "${paperName}" saved successfully!`);
-    } else {
-      toast.error('Failed to persist paper type to database.');
+    setSavingPaper(true);
+    try {
+      await shopkeeperApi.saveDynamicPaperTypes(user.shop_id, updated);
+      setPaperTypes(updated);
+      setPaperModalOpen(false);
+      toast.success(`Paper type "${normalizedName}" saved successfully!`);
+    } catch (err) {
+      console.error('Failed to save paper type:', err);
+      toast.error(`Failed to save paper type: ${err instanceof Error ? err.message : 'Please try again.'}`);
+    } finally {
+      setSavingPaper(false);
     }
   };
 
@@ -166,9 +182,17 @@ export const PricingPage: React.FC = () => {
     if (!user?.shop_id) return;
 
     const updated = paperTypes.map((p) => (p.id === id ? { ...p, is_active: !currentActive } : p));
-    setPaperTypes(updated);
-    await shopkeeperApi.saveDynamicPaperTypes(user.shop_id, updated);
-    toast.success('Paper availability status updated.');
+    setSavingPaper(true);
+    try {
+      await shopkeeperApi.saveDynamicPaperTypes(user.shop_id, updated);
+      setPaperTypes(updated);
+      toast.success('Paper availability status updated.');
+    } catch (err) {
+      console.error('Failed to update paper availability:', err);
+      toast.error(`Failed to update paper availability: ${err instanceof Error ? err.message : 'Please try again.'}`);
+    } finally {
+      setSavingPaper(false);
+    }
   };
 
   const handleDeletePaper = async (paper: DynamicPaperType) => {
@@ -180,12 +204,16 @@ export const PricingPage: React.FC = () => {
     if (!user?.shop_id) return;
 
     const updated = paperTypes.filter((p) => p.id !== paper.id);
-    setPaperTypes(updated);
-    const ok = await shopkeeperApi.saveDynamicPaperTypes(user.shop_id, updated);
-    if (ok) {
+    setSavingPaper(true);
+    try {
+      await shopkeeperApi.saveDynamicPaperTypes(user.shop_id, updated);
+      setPaperTypes(updated);
       toast.success(`Paper size/type "${paper.name}" deleted from database.`);
-    } else {
-      toast.error('Failed to delete paper type from database.');
+    } catch (err) {
+      console.error('Failed to delete paper type:', err);
+      toast.error(`Failed to delete paper type: ${err instanceof Error ? err.message : 'Please try again.'}`);
+    } finally {
+      setSavingPaper(false);
     }
   };
 
@@ -674,6 +702,7 @@ export const PricingPage: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={() => handleTogglePaperActive(pt.id, pt.is_active)}
+                                disabled={savingPaper}
                                 className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border transition-colors ${
                                   pt.is_active
                                     ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
@@ -691,6 +720,7 @@ export const PricingPage: React.FC = () => {
                                 variant="ghost"
                                 size="sm"
                                 onClick={() => handleOpenEditPaper(pt)}
+                                disabled={savingPaper}
                                 className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
                                 title="Edit paper type"
                               >
@@ -702,6 +732,7 @@ export const PricingPage: React.FC = () => {
                                   variant="ghost"
                                   size="sm"
                                   onClick={() => handleDeletePaper(pt)}
+                                  disabled={savingPaper}
                                   className="h-7 w-7 p-0 text-red-500/70 hover:text-red-500 hover:bg-red-500/10"
                                   title="Delete paper type"
                                 >
@@ -1013,6 +1044,7 @@ export const PricingPage: React.FC = () => {
               variant="outline"
               size="sm"
               onClick={() => setPaperModalOpen(false)}
+              disabled={savingPaper}
               className="text-xs h-9 rounded-lg"
             >
               Cancel
@@ -1021,9 +1053,10 @@ export const PricingPage: React.FC = () => {
               type="button"
               size="sm"
               onClick={handleSavePaperType}
+              disabled={savingPaper}
               className="text-xs h-9 rounded-lg bg-primary text-primary-foreground font-semibold"
             >
-              Save Paper Type
+              {savingPaper ? 'Saving...' : 'Save Paper Type'}
             </Button>
           </DialogFooter>
         </DialogContent>
