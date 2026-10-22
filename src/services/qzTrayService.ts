@@ -151,6 +151,7 @@ class QzTrayService {
             });
         });
 
+        (qz as any).security.setSignatureAlgorithm('SHA512');
         (qz as any).security.setSignaturePromise((toSign: string) => {
           return (resolve: (sig: string) => void, reject: (err: any) => void) => {
             fetch(`${SUPABASE_URL}/functions/v1/qz-sign`, {
