@@ -1,6 +1,6 @@
 import qz from 'qz-tray';
 import type { DetectedPrinter } from '@/types/shopkeeper';
-import { getQzAuthToken } from '@/lib/qzAuth';
+import { clearQzAuthToken, getQzAuthToken } from '@/lib/qzAuth';
 
 export type { DetectedPrinter };
 
@@ -141,6 +141,10 @@ class QzTrayService {
             },
           })
             .then((res) => {
+              if (res.status === 401) {
+                clearQzAuthToken();
+                throw new Error('QZ authorization expired or is invalid. Sign in again to enable secure printing.');
+              }
               if (!res.ok) throw new Error(`Certificate fetch failed (${res.status})`);
               return res.text();
             })
@@ -165,6 +169,10 @@ class QzTrayService {
               body: JSON.stringify({ request: toSign }),
             })
               .then((res) => {
+                if (res.status === 401) {
+                  clearQzAuthToken();
+                  throw new Error('QZ authorization expired or is invalid. Sign in again to enable secure printing.');
+                }
                 if (!res.ok) throw new Error(`Signing request failed (${res.status})`);
                 return res.text();
               })
@@ -292,11 +300,13 @@ class QzTrayService {
   private initAutoConnect() {
     // Initial attempt
     setTimeout(() => {
-      this.connect(false).catch(() => {});
+      if (getQzAuthToken()) {
+        this.connect(false).catch(() => {});
+      }
     }, 1000);
 
     this.reconnectInterval = setInterval(() => {
-      if (!this.isConnected() && !this.isConnecting) {
+      if (getQzAuthToken() && !this.isConnected() && !this.isConnecting) {
         this.connect(false).catch(() => {});
       }
     }, 6000);
@@ -309,6 +319,13 @@ class QzTrayService {
       this.lastError = undefined;
       this.notifyStatus();
       return true;
+    }
+
+    if (!getQzAuthToken()) {
+      this.connected = false;
+      this.lastError = 'QZ authorization is missing. Sign in again to enable secure printing.';
+      this.notifyStatus();
+      return false;
     }
 
     if (this.isConnecting) {
