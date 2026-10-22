@@ -59,7 +59,7 @@ export const GoForPrintModal: React.FC = () => {
   const [copies, setCopies] = useState<number>(1);
   const [colorMode, setColorMode] = useState<'B&W' | 'Color'>('B&W');
   const [duplex, setDuplex] = useState<'Single Side' | 'Back-to-Back'>('Single Side');
-  const [paperSize, setPaperSize] = useState<'A4' | 'A3' | 'Legal' | 'Letter'>('A4');
+  const [paperSize, setPaperSize] = useState<string>('A4');
   const [paperType, setPaperType] = useState<'Standard 75 GSM' | 'Bond Paper' | 'Glossy' | 'Executive'>('Standard 75 GSM');
   const [pageRange, setPageRange] = useState<string>('All');
 
@@ -141,7 +141,11 @@ export const GoForPrintModal: React.FC = () => {
   const totalPrice = useMemo(() => {
     // Check if matched in dynamic paper types
     const matchedDynamic = dynamicPaperTypes.find(
-      (pt) => pt.is_active !== false && (pt.name.toLowerCase() === paperType.toLowerCase() || pt.id.toLowerCase() === paperType.toLowerCase())
+      (pt) =>
+        pt.is_active !== false &&
+        (pt.name.toLowerCase() === paperType.toLowerCase() ||
+          pt.id.toLowerCase() === paperType.toLowerCase() ||
+          pt.name.toLowerCase() === paperSize.toLowerCase())
     );
     if (matchedDynamic) {
       const dynamicRate = colorMode === 'Color' ? Number(matchedDynamic.color_price) : Number(matchedDynamic.bw_price);
