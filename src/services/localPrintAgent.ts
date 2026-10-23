@@ -1,4 +1,4 @@
-import { qzTrayService, type QzTrayStatus, type QzPrintPayload } from '@/services/qzTrayService';
+import { type QzPrintPayload, type QzTrayStatus, qzTrayService } from '@/services/qzTrayService';
 import type { DetectedPrinter } from '@/types/shopkeeper';
 
 export type { DetectedPrinter };
@@ -71,8 +71,8 @@ class QzPrintAdapter {
     return qzTrayService.findAllPrinters();
   }
 
-  public async getConnectedPrinters(): Promise<DetectedPrinter[]> {
-    return qzTrayService.findAllPrinters();
+  public async getConnectedPrinters(includeVirtual = false): Promise<DetectedPrinter[]> {
+    return qzTrayService.findAllPrinters(includeVirtual);
   }
 
   public async scanUsbDevice(): Promise<DetectedPrinter | null> {

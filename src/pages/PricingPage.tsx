@@ -1,36 +1,50 @@
-import React, { useState, useEffect } from 'react';
-import { useShopkeeper } from '@/contexts/ShopkeeperContext';
-import { shopkeeperApi } from '@/services/shopkeeperApi';
-import type { ShopPricing, DynamicPaperType } from '@/types/shopkeeper';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import {
+  Calculator,
+  Check,
+  Circle,
+  Edit3,
+  FileText,
+  HelpCircle,
+  Layers,
+  Palette,
+  Plus,
+  RotateCcw,
+  Save,
+  Sparkles,
+  Trash2,
+} from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
-import { Switch } from '@/components/ui/switch';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from '@/components/ui/dialog';
-import {
-  Save,
-  RotateCcw,
-  Calculator,
-  FileText,
-  Layers,
-  Palette,
-  Circle,
-  HelpCircle,
-  Plus,
-  Trash2,
-  Edit3,
-  Check,
-  Sparkles,
-} from 'lucide-react';
-import { toast } from 'sonner';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { useShopkeeper } from '@/contexts/ShopkeeperContext';
+import { shopkeeperApi } from '@/services/shopkeeperApi';
+import type { DynamicPaperType, ShopPricing } from '@/types/shopkeeper';
+
+const DYNAMIC_PAPER_NAME_OPTIONS = [
+  'A4',
+  'A3',
+  'A5',
+  'Letter',
+  'Ledger',
+  'Legal',
+  'Tabloid',
+  'Bond Paper',
+  'Glossy Photo',
+  'Envelope',
+  'Executive',
+];
 
 export const PricingPage: React.FC = () => {
   const { user, t } = useShopkeeper();
@@ -92,7 +106,10 @@ export const PricingPage: React.FC = () => {
   // Handle Dynamic Paper Type save / add
   const handleOpenAddPaper = () => {
     setEditingPaper(null);
-    setPaperName('');
+    const availableName = DYNAMIC_PAPER_NAME_OPTIONS.find(
+      (name) => !paperTypes.some((paper) => paper.name.toLowerCase() === name.toLowerCase())
+    );
+    setPaperName(availableName || '');
     setPaperBwPrice('3.0');
     setPaperColorPrice('12.0');
     setPaperIsSpecial(true);
@@ -973,12 +990,29 @@ export const PricingPage: React.FC = () => {
           <div className="space-y-4 py-2 text-xs">
             <div className="space-y-1.5">
               <Label className="text-xs font-semibold uppercase">Paper Type / Size Name</Label>
-              <Input
-                placeholder="e.g. A3, A5, Bond Paper, Glossy, Envelope, Jumbo"
+              <select
                 value={paperName}
                 onChange={(e) => setPaperName(e.target.value)}
-                className="text-xs h-9 rounded-lg"
-              />
+                className="w-full h-9 rounded-lg border border-border bg-background px-3 text-xs text-foreground"
+              >
+                <option value="">Select paper type or size</option>
+                {DYNAMIC_PAPER_NAME_OPTIONS.map((name) => {
+                  const alreadyAdded = paperTypes.some(
+                    (paper) =>
+                      paper.id !== editingPaper?.id &&
+                      paper.name.toLowerCase() === name.toLowerCase()
+                  );
+                  return (
+                    <option key={name} value={name} disabled={alreadyAdded}>
+                      {name}{alreadyAdded ? ' (already added)' : ''}
+                    </option>
+                  );
+                })}
+                {editingPaper &&
+                  !DYNAMIC_PAPER_NAME_OPTIONS.some(
+                    (name) => name.toLowerCase() === editingPaper.name.toLowerCase()
+                  ) && <option value={editingPaper.name}>{editingPaper.name}</option>}
+              </select>
             </div>
 
             <div className="grid grid-cols-2 gap-3">

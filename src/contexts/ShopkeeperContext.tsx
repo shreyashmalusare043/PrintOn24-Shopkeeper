@@ -165,20 +165,13 @@ export const ShopkeeperProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     if (!user?.shop_id) return;
     try {
       const activePcId = selectedPcId === 'all' ? undefined : selectedPcId;
-      const currentPcId =
-        pcId || activePcId || pcs.find((pc) => pc.is_current_pc)?.id || pcs[0]?.id;
-
-      if (currentPcId) {
-        await shopkeeperApi.syncDetectedPrinters(user.shop_id, currentPcId);
-      }
-
-      const printers = await shopkeeperApi.getShopPrinters(user.shop_id, activePcId);
+      const printers = await shopkeeperApi.getShopPrinters(user.shop_id, pcId || activePcId);
       setRealPrinters(printers);
     } catch (err) {
       console.error('Failed to refresh printers:', err);
       toast.error(err instanceof Error ? err.message : 'Failed to refresh printers');
     }
-  }, [user?.shop_id, selectedPcId, pcs]);
+  }, [user?.shop_id, selectedPcId]);
 
   const refreshPcs = useCallback(async () => {
     if (!user?.shop_id) return;

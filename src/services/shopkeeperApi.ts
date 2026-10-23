@@ -1,33 +1,33 @@
-import { supabase } from './supabase';
-import { localPrintAgent, type DetectedPrinter, type PrintJobPayload } from './localPrintAgent';
-import { isPhysicalPrinter, isAllowedVirtualPrinter } from './qzTrayService';
 import { clearQzAuthToken, issueQzAuthToken } from '@/lib/qzAuth';
 import type {
-  ShopkeeperUser,
-  ShopProfile,
-  ShopPC,
-  ShopPrinter,
-  ShopPricing,
-  PrintOrder,
-  PrintJob,
-  ShopQR,
-  UserMembership,
-  ShopFeedback,
+  DynamicPaperType,
   PageReminder,
-  PrinterReminder,
-  PrinterRefillLog,
-  PrinterPrintMode,
-  SupportTicket,
-  PlatformPolicy,
-  ShopSubscription,
-  SubscriptionTier,
   PaymentReport,
+  PaymentTransactionRecord,
+  PlatformPolicy,
+  PrintedSegment,
+  PrinterPrintMode,
+  PrinterRefillLog,
+  PrinterReminder,
+  PrintJob,
+  PrintOrder,
   PrintReport,
   ReportFilterType,
-  DynamicPaperType,
-  PaymentTransactionRecord,
-  PrintedSegment,
+  ShopFeedback,
+  ShopkeeperUser,
+  ShopPC,
+  ShopPricing,
+  ShopPrinter,
+  ShopProfile,
+  ShopQR,
+  ShopSubscription,
+  SubscriptionTier,
+  SupportTicket,
+  UserMembership,
 } from '@/types/shopkeeper';
+import { localPrintAgent, type PrintJobPayload } from './localPrintAgent';
+import { isAllowedVirtualPrinter, isPhysicalPrinter } from './qzTrayService';
+import { supabase } from './supabase';
 
 const AUTH_KEY = 'copygo_shopkeeper_session';
 
@@ -586,21 +586,7 @@ export const shopkeeperApi = {
 
       if (accErr) throw accErr;
 
-      // 3. Insert default Master PC
-      await supabase.from('shop_pcs').insert({
-        id: `pc_${shopId}_1`,
-        shop_id: shopId,
-        pc_name: 'Counter PC 1 (Master)',
-        pc_code: 'PC-01',
-        is_default: true,
-        status: 'online',
-        is_current_pc: true,
-        os_info: 'Windows / Linux Workstation',
-        agent_version: '1.2.0',
-        created_at: now,
-      });
-
-      // 4. Insert dynamic QR code matching User Panel format: e.g. "PUNE-CFP-01"
+      // 3. Insert dynamic QR code matching User Panel format: e.g. "PUNE-CFP-01"
       await supabase.from('shop_qrs').insert({
         id: `qr_${shopId}_main`,
         shop_id: shopId,
@@ -612,7 +598,7 @@ export const shopkeeperApi = {
         created_at: now,
       });
 
-      // 5. Insert default pricing
+      // 4. Insert default pricing
       await supabase.from('shop_pricing').insert({
         id: `prc_${shopId}`,
         shop_id: shopId,
@@ -1007,54 +993,6 @@ export const shopkeeperApi = {
     }
   },
 
-  // Synchronize OS-detected physical printers from localPrintAgent into the database
-  async syncDetectedPrinters(shopId: string, pcId: string): Promise<ShopPrinter[]> {
-    try {
-      const existing = await this.getShopPrinters(shopId, pcId);
-      const existingMap = new Map(existing.map((p) => [p.id, p]));
-      const detected: DetectedPrinter[] = await localPrintAgent.enumeratePrinters();
-      const syncedPrinters: ShopPrinter[] = [...existing];
-
-      for (const d of detected) {
-        if (!existingMap.has(d.id)) {
-          const printerRecord: ShopPrinter = {
-            id: d.id,
-            shop_id: shopId,
-            pc_id: pcId,
-            hardware_id: d.hardware_id,
-            name: d.name,
-            model: d.name.split(' ')[0] || 'Standard Laser',
-            connection_type: d.connection_type.toLowerCase() === 'usb' ? 'usb' : 'network',
-            status: d.is_online ? 'online' : 'offline',
-            is_online: d.is_online,
-            usage_type: d.is_color ? 'All' : 'B&W Only',
-            is_color: d.is_color,
-            is_duplex: d.is_duplex,
-            capabilities: {
-              color: d.is_color,
-              bw: true,
-              single_side: true,
-              double_side: d.is_duplex,
-            },
-            paper_sizes: d.paper_sizes,
-            paper_types: d.paper_types,
-            is_default: d.is_default,
-            last_seen: new Date().toISOString(),
-          };
-
-          // Insert into Supabase shop_printers only if brand new
-          const { error } = await supabase.from('shop_printers').insert(printerRecord);
-          if (error) throw new Error(`Could not save detected printer "${d.name}": ${error.message}`);
-          syncedPrinters.push(printerRecord);
-        }
-      }
-
-      return syncedPrinters;
-    } catch (err) {
-      throw new Error(`Failed to sync QZ Tray printers: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
-
   async addPrinter(printer: Partial<ShopPrinter>): Promise<ShopPrinter | null> {
     const printerId = printer.id || `prn_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const nowIso = new Date().toISOString();
@@ -1105,8 +1043,19 @@ export const shopkeeperApi = {
           status: 'online',
           is_online: true,
           pc_id: printer.pc_id || null,
+          hardware_id: printer.hardware_id || `hw_${Date.now()}`,
           is_color: !!printer.is_color,
           is_duplex: !!printer.is_duplex,
+          usage_type: printer.usage_type || 'All',
+          paper_sizes: printer.paper_sizes || ['A4'],
+          paper_types: printer.paper_types || ['Standard 75 GSM'],
+          capabilities: printer.capabilities || {
+            bw: true,
+            color: !!printer.is_color,
+            single_side: true,
+            double_side: !!printer.is_duplex,
+          },
+          is_default: !!printer.is_default,
         };
         const { data: retryData, error: retryError } = await supabase
           .from('shop_printers')
@@ -1148,8 +1097,8 @@ export const shopkeeperApi = {
 
   async deletePrinter(printerId: string): Promise<boolean> {
     try {
-      await supabase.from('shop_printers').delete().eq('id', printerId);
-      return true;
+      const { error } = await supabase.from('shop_printers').delete().eq('id', printerId);
+      return !error;
     } catch {
       return false;
     }
@@ -2129,19 +2078,16 @@ export const shopkeeperApi = {
   },
 
   async updateOrderStatus(orderId: string, status: string, paymentStatus?: string): Promise<boolean> {
-    try {
-      const updates: any = { order_status: status };
-      if (paymentStatus) {
-        updates.payment_status = paymentStatus;
-      }
-      if (status === 'Completed') {
-        updates.completed_at = new Date().toISOString();
-      }
-      await supabase.from('print_orders').update(updates).eq('id', orderId);
-      return true;
-    } catch {
-      return true;
+    const updates: any = { order_status: status };
+    if (paymentStatus) {
+      updates.payment_status = paymentStatus;
     }
+    if (status === 'Completed') {
+      updates.completed_at = new Date().toISOString();
+    }
+    const { error } = await supabase.from('print_orders').update(updates).eq('id', orderId);
+    if (error) throw error;
+    return true;
   },
 
   // ---------------- ORDER PREVIEW DETAILS & TENANT ISOLATION ----------------
@@ -2538,6 +2484,8 @@ export const shopkeeperApi = {
     config: {
       pageSize?: string;
       page_size?: string;
+      paperType?: string;
+      paper_type?: string;
       printType?: string;
       color_mode?: string;
       sides?: string;
@@ -2585,6 +2533,19 @@ export const shopkeeperApi = {
       printer.capabilities?.single_side !== false;
 
     const supportedSizes = (printer.paper_sizes || ['A4']).map((s: string) => s.trim().toUpperCase());
+    const normalizePaperType = (type: string) =>
+      type.trim().toLowerCase().replace(/\s+paper$/, '');
+    const supportedPaperTypes = (printer.paper_types || []).map(normalizePaperType);
+
+    const checkPaperType = (requestedType?: string) => {
+      if (
+        requestedType &&
+        supportedPaperTypes.length > 0 &&
+        !supportedPaperTypes.includes(normalizePaperType(requestedType))
+      ) {
+        reasons.push(`Requires ${requestedType} paper type, which is unsupported by printer.`);
+      }
+    };
 
     if (customRanges && customRanges.length > 0) {
       // Validate every single custom range against this printer's capabilities
@@ -2609,6 +2570,7 @@ export const shopkeeperApi = {
         if (!supportedSizes.includes(rangeSize)) {
           reasons.push(`Custom Range #${i + 1} requires ${rangeSize} paper, which is unsupported by printer.`);
         }
+        checkPaperType(rng.paperType || rng.paper_type || config.paperType || config.paper_type);
       }
 
       if (colorNeeded && !printerSupportsColor) {
@@ -2629,6 +2591,7 @@ export const shopkeeperApi = {
       if (!supportedSizes.includes(requestedSize)) {
         reasons.push(`Requires ${requestedSize} paper, but printer supports [${supportedSizes.join(', ')}]`);
       }
+      checkPaperType(config.paperType || config.paper_type);
 
       const reqColorStr = (config.printType || config.color_mode || 'Black & White').toLowerCase();
       const isReqColor = reqColorStr.includes('color') || reqColorStr.includes('colour');
@@ -2671,6 +2634,8 @@ export const shopkeeperApi = {
     const configToMatch = specificDocConfig || {
       pageSize: order.config_page_size,
       page_size: order.config_page_size,
+      paperType: order.config_paper_type,
+      paper_type: order.config_paper_type,
       printType: order.config_print_type,
       color_mode: order.config_print_type,
       sides: order.config_sides,
@@ -4904,69 +4869,71 @@ The merchant is solely responsible for credentials assigned to their counter sta
 
   // ---------------- DYNAMIC PAPER TYPES & SPECIALIZED HIGHLIGHTING (Items 14, 15) ----------------
   async getDynamicPaperTypes(shopId: string): Promise<DynamicPaperType[]> {
-    try {
-      const { data: settings, error: settingsError } = await supabase
-        .from('shopkeeper_settings')
-        .select('dynamic_paper_types')
-        .eq('shop_id', shopId)
-        .maybeSingle();
+    const { data, error } = await supabase
+      .from('shop_dynamic_paper_types')
+      .select('id, name, is_active, bw_price, color_price, is_special')
+      .eq('shop_id', shopId)
+      .order('name');
 
-      if (settingsError) throw settingsError;
-      if (settings?.dynamic_paper_types && Array.isArray(settings.dynamic_paper_types) && settings.dynamic_paper_types.length > 0) {
-        return settings.dynamic_paper_types;
-      }
-
-      const { data: pricing, error: pricingError } = await supabase
-        .from('shop_pricing')
-        .select('dynamic_paper_types')
-        .eq('shop_id', shopId)
-        .maybeSingle();
-
-      if (pricingError) throw pricingError;
-      if (pricing?.dynamic_paper_types && Array.isArray(pricing.dynamic_paper_types) && pricing.dynamic_paper_types.length > 0) {
-        return pricing.dynamic_paper_types;
-      }
-
-      const defaultTypes: DynamicPaperType[] = [
-        { id: 'a4', name: 'A4', is_active: true, bw_price: 2.0, color_price: 10.0, is_special: false },
-        { id: 'a3', name: 'A3', is_active: true, bw_price: 5.0, color_price: 20.0, is_special: true },
-        { id: 'a5', name: 'A5', is_active: true, bw_price: 1.5, color_price: 8.0, is_special: false },
-        { id: 'bond', name: 'Bond Paper', is_active: true, bw_price: 4.0, color_price: 12.0, is_special: true },
-        { id: 'glossy', name: 'Glossy Photo', is_active: true, bw_price: 15.0, color_price: 25.0, is_special: true },
-        { id: 'envelope', name: 'Envelope', is_active: false, bw_price: 5.0, color_price: 15.0, is_special: true },
-      ];
-      return defaultTypes;
-    } catch {
-      return [];
+    if (error) {
+      console.error('Failed to load dynamic paper types:', error);
+      throw error;
     }
+
+    if (data && data.length > 0) return data as DynamicPaperType[];
+
+    const defaultTypes: DynamicPaperType[] = [
+      { id: 'a4', name: 'A4', is_active: true, bw_price: 2.0, color_price: 10.0, is_special: false },
+      { id: 'a3', name: 'A3', is_active: true, bw_price: 5.0, color_price: 20.0, is_special: true },
+      { id: 'a5', name: 'A5', is_active: true, bw_price: 1.5, color_price: 8.0, is_special: false },
+      { id: 'bond', name: 'Bond Paper', is_active: true, bw_price: 4.0, color_price: 12.0, is_special: true },
+      { id: 'glossy', name: 'Glossy Photo', is_active: true, bw_price: 15.0, color_price: 25.0, is_special: true },
+      { id: 'envelope', name: 'Envelope', is_active: false, bw_price: 5.0, color_price: 15.0, is_special: true },
+    ];
+    await this.saveDynamicPaperTypes(shopId, defaultTypes);
+    return defaultTypes;
   },
 
   async saveDynamicPaperTypes(shopId: string, types: DynamicPaperType[]): Promise<boolean> {
-    const updatedAt = new Date().toISOString();
-    const { error: settingsError } = await supabase
-        .from('shopkeeper_settings')
-        .upsert({
-          id: `set_${shopId}`,
-          shop_id: shopId,
-          dynamic_paper_types: types,
-          updated_at: updatedAt,
-        }, { onConflict: 'shop_id' });
-    if (settingsError) {
-      console.error('Error saving dynamic paper types to shopkeeper_settings:', settingsError);
-      throw settingsError;
+    const { data: existingTypes, error: fetchError } = await supabase
+      .from('shop_dynamic_paper_types')
+      .select('id')
+      .eq('shop_id', shopId);
+    if (fetchError) {
+      console.error('Failed to read dynamic paper types before saving:', fetchError);
+      throw fetchError;
     }
 
-    const { error: pricingError } = await supabase
-        .from('shop_pricing')
-        .upsert({
-          id: `prc_${shopId}`,
-          shop_id: shopId,
-          dynamic_paper_types: types,
-          updated_at: updatedAt,
-        }, { onConflict: 'shop_id' });
-    if (pricingError) {
-      console.error('Error saving dynamic paper types to shop_pricing:', pricingError);
-      throw pricingError;
+    const now = new Date().toISOString();
+    if (types.length > 0) {
+      const rows = types.map((paper) => ({
+        ...paper,
+        shop_id: shopId,
+        updated_at: now,
+      }));
+      const { error } = await supabase
+        .from('shop_dynamic_paper_types')
+        .upsert(rows, { onConflict: 'shop_id,id' });
+      if (error) {
+        console.error('Failed to save dynamic paper types:', error);
+        throw error;
+      }
+    }
+
+    const retainedIds = new Set(types.map((paper) => paper.id));
+    const removedIds = (existingTypes || [])
+      .map((paper: { id: string }) => paper.id)
+      .filter((id: string) => !retainedIds.has(id));
+    for (const id of removedIds) {
+      const { error } = await supabase
+        .from('shop_dynamic_paper_types')
+        .delete()
+        .eq('shop_id', shopId)
+        .eq('id', id);
+      if (error) {
+        console.error(`Failed to delete dynamic paper type "${id}":`, error);
+        throw error;
+      }
     }
 
     return true;
@@ -5016,26 +4983,23 @@ The merchant is solely responsible for credentials assigned to their counter sta
     remainingPages: any[],
     newStatus?: string
   ): Promise<boolean> {
-    try {
-      const updates: any = {
-        printed_segments: printedSegments,
-        remaining_pages_info: remainingPages,
-        updated_at: new Date().toISOString(),
-      };
-      if (newStatus) {
-        updates.order_status = newStatus;
-        if (newStatus === 'Completed') {
-          updates.completed_at = new Date().toISOString();
-        }
+    const updates: any = {
+      printed_segments: printedSegments,
+      remaining_pages_info: remainingPages,
+      updated_at: new Date().toISOString(),
+    };
+    if (newStatus) {
+      updates.order_status = newStatus;
+      if (newStatus === 'Completed') {
+        updates.completed_at = new Date().toISOString();
       }
-      await supabase
-        .from('print_orders')
-        .update(updates)
-        .eq('id', orderId);
-      return true;
-    } catch {
-      return false;
     }
+    const { error } = await supabase
+      .from('print_orders')
+      .update(updates)
+      .eq('id', orderId);
+    if (error) throw error;
+    return true;
   },
 
   // ---------------- PC REQUESTS (FOR SUPER ADMIN REVIEW) ----------------

@@ -1,7 +1,7 @@
 import qz from 'qz-tray';
-import type { DetectedPrinter } from '@/types/shopkeeper';
 import { clearQzAuthToken, getQzAuthToken } from '@/lib/qzAuth';
 import { createFunctionError } from '@/lib/supabaseFunctionError';
+import type { DetectedPrinter } from '@/types/shopkeeper';
 
 export type { DetectedPrinter };
 
@@ -398,8 +398,8 @@ class QzTrayService {
     }
   }
 
-  // Enumerate real physical printers installed on the user PC using official qz.printers.find()
-  public async findAllPrinters(): Promise<DetectedPrinter[]> {
+  // Enumerate printers installed on the user PC using official qz.printers.find()
+  public async findAllPrinters(includeVirtual = false): Promise<DetectedPrinter[]> {
     if (!this.isConnected()) {
       const ok = await this.connect(true);
       if (!ok) {
@@ -417,10 +417,10 @@ class QzTrayService {
         this.defaultPrinterName = undefined;
       }
 
-      // Filter out virtual/software printers (PDF, XPS, OneNote, AnyDesk, Fax, etc.)
       const physicalPrinterList = rawPrinterList.filter((name) => isPhysicalPrinter(name));
+      const printerNames = includeVirtual ? rawPrinterList : physicalPrinterList;
 
-      if (physicalPrinterList.length === 0) {
+      if (printerNames.length === 0) {
         this.lastError = rawPrinterList.length
           ? 'QZ Tray found only virtual printers. Install or enable a physical printer in Windows.'
           : 'QZ Tray is connected, but Windows reports no installed printers.';
@@ -429,7 +429,7 @@ class QzTrayService {
         return [];
       }
 
-      const detectedPrinters: DetectedPrinter[] = physicalPrinterList.map((name) => {
+      const detectedPrinters: DetectedPrinter[] = printerNames.map((name) => {
         const isDefault = name === this.defaultPrinterName;
         const upper = name.toUpperCase();
         const isWifi =
@@ -485,6 +485,9 @@ class QzTrayService {
       });
 
       this.lastError = undefined;
+      if (includeVirtual) {
+        return detectedPrinters;
+      }
       this.notifyPrinters(detectedPrinters);
       return detectedPrinters;
     } catch (err: any) {

@@ -1,28 +1,28 @@
-import React, { useState, useEffect } from 'react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Copy,
+  FileText,
+  Info,
+  Layers,
+  Printer,
+  Sliders,
+  Sparkles,
+} from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
+import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import {
-  Sliders,
-  Printer,
-  CheckCircle2,
-  AlertTriangle,
-  FileText,
-  Copy,
-  Layers,
-  Sparkles,
-  Info,
-} from 'lucide-react';
 import type { ShopPrinter } from '@/types/shopkeeper';
 
 export interface PrinterDriverSettings {
@@ -118,13 +118,22 @@ export const PrinterPropertiesDialog: React.FC<PrinterPropertiesDialogProps> = (
   const supportedPaperSizes =
     currentPrinterObj?.paper_sizes && currentPrinterObj.paper_sizes.length > 0
       ? currentPrinterObj.paper_sizes
-      : ['A4', 'A3', 'Legal', 'Letter', 'A5'];
+      : ['A4', 'A3', 'Legal', 'Letter', 'Ledger', 'A5'];
+  const supportedPaperTypes =
+    currentPrinterObj?.paper_types && currentPrinterObj.paper_types.length > 0
+      ? currentPrinterObj.paper_types
+      : ['Standard 75 GSM', 'Bond Paper', 'Glossy', 'Envelope', 'Executive', 'Cardstock', 'Recycled'];
 
   const isSelectedPaperSupported =
     !currentPrinterObj ||
     !currentPrinterObj.paper_sizes ||
     currentPrinterObj.paper_sizes.length === 0 ||
     currentPrinterObj.paper_sizes.some((s) => s.toLowerCase() === paperSize.toLowerCase());
+  const isSelectedPaperTypeSupported =
+    !currentPrinterObj ||
+    !currentPrinterObj.paper_types ||
+    currentPrinterObj.paper_types.length === 0 ||
+    currentPrinterObj.paper_types.some((type) => type.toLowerCase() === mediaType.toLowerCase());
 
   const toggleColorMode = (mode: 'B&W' | 'Color') => {
     setColorMode((prev) => (prev === mode ? null : mode));
@@ -147,6 +156,9 @@ export const PrinterPropertiesDialog: React.FC<PrinterPropertiesDialogProps> = (
       setScaling('fit');
     } else if (val === 'Fit to Letter' || val === 'Letter') {
       setPaperSize('Letter');
+      setScaling('fit');
+    } else if (val === 'Fit to Ledger' || val === 'Ledger') {
+      setPaperSize('Ledger');
       setScaling('fit');
     }
   };
@@ -302,10 +314,10 @@ export const PrinterPropertiesDialog: React.FC<PrinterPropertiesDialogProps> = (
                     <option value="A3">A3 (297 x 420 mm / 11.69 x 16.54 in)</option>
                     <option value="Legal">Legal (216 x 356 mm / 8.5 x 14.0 in)</option>
                     <option value="Letter">Letter (216 x 279 mm / 8.5 x 11.0 in)</option>
+                    <option value="Ledger">Ledger (279 x 432 mm / 11 x 17 in)</option>
                     <option value="Tabloid">Tabloid / 11x17 (279 x 432 mm / 11.0 x 17.0 in)</option>
                     <option value="A5">A5 (148 x 210 mm / 5.83 x 8.27 in)</option>
                     <option value="Executive">Executive (184 x 267 mm / 7.25 x 10.5 in)</option>
-                    <option value="Glossy">Glossy Photo Paper (A4 / 210 x 297 mm)</option>
                     <option value="Photo 4x6">Photo 4x6 in (102 x 152 mm)</option>
                   </select>
                   {!supportedPaperSizes.some((s) => s.toLowerCase() === paperSize.toLowerCase()) && (
@@ -331,6 +343,7 @@ export const PrinterPropertiesDialog: React.FC<PrinterPropertiesDialogProps> = (
                     <option value="A3">Fit to A3</option>
                     <option value="Legal">Fit to Legal</option>
                     <option value="Letter">Fit to Letter</option>
+                    <option value="Ledger">Fit to Ledger</option>
                   </select>
                 </div>
 
@@ -362,13 +375,18 @@ export const PrinterPropertiesDialog: React.FC<PrinterPropertiesDialogProps> = (
                     onChange={(e) => setMediaType(e.target.value)}
                     className="w-full bg-[#121316] border border-neutral-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-primary font-mono"
                   >
-                    <option value="Standard 75 GSM">Plain Paper (75-80 GSM)</option>
-                    <option value="Bond Paper">Bond Paper (85-90 GSM)</option>
-                    <option value="Glossy">Glossy Photo Paper (180-250 GSM)</option>
-                    <option value="Executive">Executive Heavy Paper (100 GSM)</option>
-                    <option value="Cardstock">Heavy / Cardstock (300 GSM)</option>
-                    <option value="Recycled">Recycled Paper</option>
+                    {[...new Set([...supportedPaperTypes, mediaType])].map((type) => (
+                      <option key={type} value={type}>
+                        {type}
+                        {type === mediaType && !isSelectedPaperTypeSupported ? ' (not configured for this printer)' : ''}
+                      </option>
+                    ))}
                   </select>
+                  {!isSelectedPaperTypeSupported && (
+                    <p className="text-[11px] text-amber-400 mt-1 font-mono">
+                      This media type is not configured as supported by the selected printer.
+                    </p>
+                  )}
                 </div>
 
                 {/* Color Mode (Toggleable, neither selected by default) */}

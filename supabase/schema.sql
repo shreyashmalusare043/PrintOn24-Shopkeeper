@@ -875,6 +875,26 @@ CREATE TABLE IF NOT EXISTS "public"."shop_pricing" (
 
 
 --
+-- Name: shop_dynamic_paper_types; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE IF NOT EXISTS "public"."shop_dynamic_paper_types" (
+    "id" "text" NOT NULL,
+    "shop_id" "text" NOT NULL,
+    "name" "text" NOT NULL,
+    "is_active" boolean DEFAULT true NOT NULL,
+    "bw_price" numeric DEFAULT 0 NOT NULL,
+    "color_price" numeric DEFAULT 0 NOT NULL,
+    "is_special" boolean DEFAULT false NOT NULL,
+    "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
+    CONSTRAINT "shop_dynamic_paper_types_bw_price_check" CHECK ("bw_price" >= 0),
+    CONSTRAINT "shop_dynamic_paper_types_color_price_check" CHECK ("color_price" >= 0),
+    CONSTRAINT "shop_dynamic_paper_types_pkey" PRIMARY KEY ("shop_id", "id")
+);
+
+
+--
 -- Name: shop_printers; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2619,6 +2639,21 @@ CREATE INDEX IF NOT EXISTS "idx_shop_printers_shop_id" ON "public"."shop_printer
 
 
 --
+-- Name: shop_dynamic_paper_types_shop_name_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX IF NOT EXISTS "shop_dynamic_paper_types_shop_name_key"
+    ON "public"."shop_dynamic_paper_types" USING "btree" ("shop_id", "lower"("name"));
+
+--
+-- Name: shop_dynamic_paper_types_shop_active_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX IF NOT EXISTS "shop_dynamic_paper_types_shop_active_idx"
+    ON "public"."shop_dynamic_paper_types" USING "btree" ("shop_id", "is_active");
+
+
+--
 -- Name: idx_shop_qrs_shop_code; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -3934,6 +3969,28 @@ $pg_schema_restore$;
 
 
 --
+-- Name: shop_dynamic_paper_types allow_all_shop_dynamic_paper_types; Type: POLICY; Schema: public; Owner: -
+--
+
+DO $pg_schema_restore$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policy pol
+    JOIN pg_class c ON c.oid = pol.polrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE pol.polname = 'allow_all_shop_dynamic_paper_types'
+      AND n.nspname = 'public'
+      AND c.relname = 'shop_dynamic_paper_types'
+  ) THEN
+    EXECUTE $pg_schema_sql$
+CREATE POLICY "allow_all_shop_dynamic_paper_types" ON "public"."shop_dynamic_paper_types" TO "authenticated", "anon" USING (true) WITH CHECK (true);
+$pg_schema_sql$;
+  END IF;
+END
+$pg_schema_restore$;
+
+
+--
 -- Name: shop_printers allow_all_shop_printers; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -4482,6 +4539,12 @@ ALTER TABLE "public"."shop_pcs" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "public"."shop_pricing" ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: shop_dynamic_paper_types; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE "public"."shop_dynamic_paper_types" ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: shop_printers; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -5003,4 +5066,3 @@ INSERT INTO "storage"."buckets" ("id", "name", "owner", "created_at", "updated_a
 -- SECTION: CRON JOBS
 -- ============================================================
 -- 用户自定义 pg_cron 任务。
-

@@ -130,10 +130,11 @@ export const PartialPrintSummaryModal: React.FC<PartialPrintSummaryModalProps> =
           <Button
             size="sm"
             onClick={onMarkCompleted}
+            disabled={pendingSegments.length > 0}
             className="w-full sm:w-auto text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
           >
             <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
-            Mark Order Completed
+            {pendingSegments.length > 0 ? 'Print Pending Segments First' : 'Mark Order Completed'}
           </Button>
         </DialogFooter>
       </DialogContent>

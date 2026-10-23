@@ -1142,7 +1142,6 @@ export default function OrderPreviewPage() {
         setPartialSummaryOpen(true);
       } else {
         await shopkeeperApi.saveOrderPrintedSegments(order.id, allPrinted, [], 'Completed');
-        await shopkeeperApi.updateOrderStatus(order.id, 'Completed');
         toast.success(
           `Order #${order.token_number || order.id} printed completely! (${jobPlans.length} segment${jobPlans.length > 1 ? 's' : ''})`,
           { id: toastId }
@@ -1740,6 +1739,10 @@ export default function OrderPreviewPage() {
           loadOrderData();
         }}
         onMarkCompleted={async () => {
+          if (summaryPendingSegments.length > 0) {
+            toast.info('Print all pending segments before completing this order.');
+            return;
+          }
           try {
             await shopkeeperApi.updateOrderStatus(order.id, 'Completed');
             setPartialSummaryOpen(false);

@@ -1,36 +1,80 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { useShopkeeper } from '@/contexts/ShopkeeperContext';
-import { shopkeeperApi } from '@/services/shopkeeperApi';
-import { qzTrayService, isPhysicalPrinter, isAllowedVirtualPrinter } from '@/services/qzTrayService';
-import { localPrintAgent, type DetectedPrinter } from '@/services/localPrintAgent';
-import type { ShopPrinter } from '@/types/shopkeeper';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import {
+  Check,
+  Monitor,
+  Plus,
+  Power,
+  Printer,
+  RotateCw,
+  Sliders,
+  Trash2,
+  Zap,
+} from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
+import { PageLockOverlay } from '@/components/PageLockOverlay';
 import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  Printer,
-  Sliders,
-  RotateCw,
-  Plus,
-  Power,
-  Trash2,
-  Monitor,
-  Check,
-  Zap,
-} from 'lucide-react';
-import { toast } from 'sonner';
-import { PageLockOverlay } from '@/components/PageLockOverlay';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { useShopkeeper } from '@/contexts/ShopkeeperContext';
+import { type DetectedPrinter, localPrintAgent } from '@/services/localPrintAgent';
+import { isPhysicalPrinter, qzTrayService } from '@/services/qzTrayService';
+import { shopkeeperApi } from '@/services/shopkeeperApi';
+import type { ShopPrinter } from '@/types/shopkeeper';
+
+const PRINTER_PAPER_SIZES = ['A4', 'A3', 'Letter', 'Ledger', 'Legal'];
+const PRINTER_PAPER_TYPES = ['Standard 75 GSM', 'Bond Paper', 'Glossy', 'Envelope', 'Executive'];
+
+interface MultiOptionDropdownProps {
+  label: string;
+  options: string[];
+  value: string[];
+  onChange: (value: string[]) => void;
+}
+
+const MultiOptionDropdown: React.FC<MultiOptionDropdownProps> = ({
+  label,
+  options,
+  value,
+  onChange,
+}) => (
+  <details className="group relative">
+    <summary className="flex min-h-9 cursor-pointer list-none items-center justify-between rounded-lg border border-border bg-background px-3 py-2 text-xs text-foreground">
+      <span className="truncate">
+        {value.length > 0 ? value.join(', ') : `Select ${label.toLowerCase()}`}
+      </span>
+      <span className="ml-2 text-muted-foreground">v</span>
+    </summary>
+    <div className="absolute z-20 mt-1 max-h-48 w-full overflow-y-auto rounded-lg border border-border bg-popover p-2 shadow-lg">
+      {options.map((option) => (
+        <label key={option} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-muted">
+          <input
+            type="checkbox"
+            checked={value.includes(option)}
+            onChange={(event) =>
+              onChange(
+                event.target.checked
+                  ? [...value, option]
+                  : value.filter((selected) => selected !== option)
+              )
+            }
+          />
+          <span>{option}</span>
+        </label>
+      ))}
+    </div>
+  </details>
+);
 
 export const PrintersPage: React.FC = () => {
   const { user, pcs, selectedPcId, setSelectedPcId, realPrinters, refreshPrinters } =
@@ -49,8 +93,9 @@ export const PrintersPage: React.FC = () => {
     'usb' | 'wifi' | 'lan' | 'network' | 'windows'
   >('usb');
   const [formColorMode, setFormColorMode] = useState<'bw' | 'color' | 'both'>('both');
-  const [formDuplex, setFormDuplex] = useState<boolean>(true);
-  const [formPaperSizes, setFormPaperSizes] = useState<string[]>(['A4', 'Legal']);
+  const [formSideMode, setFormSideMode] = useState<'both' | 'single' | 'duplex'>('both');
+  const [formPaperSizes, setFormPaperSizes] = useState<string[]>(['A4']);
+  const [formPaperTypes, setFormPaperTypes] = useState<string[]>(['Standard 75 GSM']);
   const [formAssignedPcId, setFormAssignedPcId] = useState<string>('');
   const [formStatus, setFormStatus] = useState<'online' | 'offline'>('online');
   const [savingPrinter, setSavingPrinter] = useState<boolean>(false);
@@ -63,6 +108,7 @@ export const PrintersPage: React.FC = () => {
   const [virtualColorMode, setVirtualColorMode] = useState<'both' | 'color' | 'bw'>('both');
   const [virtualDuplex, setVirtualDuplex] = useState<boolean>(true);
   const [virtualPaperSizes, setVirtualPaperSizes] = useState<string[]>(['A4', 'Legal']);
+  const [virtualPaperTypes, setVirtualPaperTypes] = useState<string[]>(['Standard 75 GSM']);
   const [savingVirtual, setSavingVirtual] = useState<boolean>(false);
 
   // EDIT PRINTER MODAL
@@ -71,6 +117,7 @@ export const PrintersPage: React.FC = () => {
   const [editColorMode, setEditColorMode] = useState<'both' | 'color' | 'bw'>('both');
   const [editSideMode, setEditSideMode] = useState<'both' | 'single' | 'duplex'>('both');
   const [editPaperSizes, setEditPaperSizes] = useState<string[]>(['A4']);
+  const [editPaperTypes, setEditPaperTypes] = useState<string[]>(['Standard 75 GSM']);
 
   const activePc = pcs.find((p) => p.id === selectedPcId) || pcs[0];
 
@@ -92,25 +139,31 @@ export const PrintersPage: React.FC = () => {
     }
   }, [user?.shop_id]);
 
-  // Fetch real detected physical OS printers in background
+  // Fetch installed OS printer drivers for the Add Printer selector.
   const loadDetectedPrintersFromAgent = async () => {
     setScanning(true);
     try {
-      const list = await localPrintAgent.getConnectedPrinters();
-      // Filter out virtual/software printers strictly (XPS, PDF, OneNote, AnyDesk, Fax, etc.)
-      const physicalOnly = list.filter((p) => isPhysicalPrinter(p.name));
-      setDetectedPrinters(physicalOnly);
-      if (physicalOnly.length > 0) {
+      const list = await localPrintAgent.getConnectedPrinters(true);
+      setDetectedPrinters(list);
+      if (
+        selectedDetectedPrinterHwId &&
+        !list.some((printer) => (printer.hardware_id || printer.id) === selectedDetectedPrinterHwId)
+      ) {
+        setSelectedDetectedPrinterHwId('');
+        setFormPrinterName('');
+        setFormModel('');
+      }
+      if (list.length > 0) {
         setDetectionMessage('');
       } else {
         const status = qzTrayService.getStatus();
         const message = status.connected
-          ? status.error || 'QZ Tray is connected, but no physical printers were found in Windows.'
+          ? status.error || 'QZ Tray is connected, but no printer drivers were found in Windows.'
           : status.error || 'QZ Tray is not connected. Start QZ Tray on this computer and sign in again.';
         setDetectionMessage(message);
         toast.warning(message);
       }
-      return physicalOnly;
+      return list;
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not scan printers through QZ Tray.';
       setDetectionMessage(message);
@@ -124,77 +177,49 @@ export const PrintersPage: React.FC = () => {
   // Open + Add Printer Modal
   const handleOpenAddPrinterModal = async () => {
     setFormAssignedPcId(activePc?.id || pcs[0]?.id || 'pc_01');
+    setSelectedDetectedPrinterHwId('');
+    setFormPrinterName('');
+    setFormModel('');
+    setFormConnectionType('usb');
+    setFormColorMode('both');
+    setFormSideMode('both');
+    setFormPaperSizes(['A4']);
+    setFormPaperTypes(['Standard 75 GSM']);
     setAddModalOpen(true);
-    const detected = await loadDetectedPrintersFromAgent();
-
-    if (detected.length > 0) {
-      const first = detected[0];
-      setSelectedDetectedPrinterHwId(first.hardware_id || '');
-      setFormPrinterName(first.name);
-      setFormModel(first.model || first.name);
-      setFormConnectionType(
-        first.connection_type.toLowerCase() === 'usb'
-          ? 'usb'
-          : first.connection_type.toLowerCase() === 'wifi' || first.connection_type.toLowerCase() === 'wi-fi'
-          ? 'wifi'
-          : 'network'
-      );
-      setFormColorMode(first.is_color ? 'color' : 'bw');
-      setFormDuplex(first.is_duplex);
-      setFormPaperSizes(first.paper_sizes || ['A4', 'Legal']);
-    } else {
-      setSelectedDetectedPrinterHwId('');
-      setFormPrinterName('');
-      setFormModel('');
-    }
+    await loadDetectedPrintersFromAgent();
   };
 
-  // When user changes connection interface (Wi-Fi, LAN, USB)
-  const handleConnectionTypeChange = async (newType: 'network' | 'usb' | 'wifi' | 'lan') => {
+  // Connection type can be adjusted without changing the selected printer.
+  const handleConnectionTypeChange = (newType: 'network' | 'usb' | 'wifi' | 'lan' | 'windows') => {
     setFormConnectionType(newType);
-    setScanning(true);
-    try {
-      const conn = newType === 'wifi' ? 'wifi' : newType === 'lan' ? 'lan' : 'usb';
-      const list = await qzTrayService.getPrintersByConnection(conn);
-      const physicalOnly = list.filter((p: DetectedPrinter) => isPhysicalPrinter(p.name));
-      if (physicalOnly.length > 0) {
-        setDetectedPrinters(physicalOnly);
-        const match = physicalOnly[0];
-        setSelectedDetectedPrinterHwId(match.hardware_id || '');
-        setFormPrinterName(match.name);
-        setFormModel(match.model || match.name);
-        setFormColorMode(match.is_color ? 'color' : 'bw');
-        setFormDuplex(match.is_duplex);
-        setFormPaperSizes(match.paper_sizes || ['A4', 'Legal']);
-      } else {
-        const all = await localPrintAgent.getConnectedPrinters();
-        const physical = all.filter((p: DetectedPrinter) => isPhysicalPrinter(p.name));
-        setDetectedPrinters(physical);
-      }
-    } catch {
-      // fallback
-    } finally {
-      setScanning(false);
-    }
   };
 
   // When user selects a detected printer from dropdown
   const handleSelectDetectedPrinter = (hwId: string) => {
     setSelectedDetectedPrinterHwId(hwId);
-    const found = detectedPrinters.find((d) => d.hardware_id === hwId);
+    const found = detectedPrinters.find((d) => (d.hardware_id || d.id) === hwId);
     if (found) {
       setFormPrinterName(found.name);
       setFormModel(found.model || found.name);
+      const connectionType = found.connection_type.toLowerCase();
       setFormConnectionType(
-        found.connection_type.toLowerCase() === 'usb'
+        connectionType.includes('usb')
           ? 'usb'
-          : found.connection_type.toLowerCase() === 'wifi' || found.connection_type.toLowerCase() === 'wi-fi'
+          : connectionType.includes('wifi') || connectionType.includes('wi-fi')
           ? 'wifi'
+          : connectionType.includes('lan')
+          ? 'lan'
+          : connectionType.includes('spooler') || connectionType.includes('windows')
+          ? 'windows'
           : 'network'
       );
       setFormColorMode(found.is_color ? 'color' : 'bw');
-      setFormDuplex(found.is_duplex);
-      setFormPaperSizes(found.paper_sizes || ['A4', 'Legal']);
+      setFormSideMode(found.is_duplex ? 'both' : 'single');
+      setFormPaperSizes(found.paper_sizes?.length ? found.paper_sizes : ['A4']);
+      setFormPaperTypes(found.paper_types?.length ? found.paper_types : ['Standard 75 GSM']);
+    } else {
+      setFormPrinterName('');
+      setFormModel('');
     }
   };
 
@@ -202,6 +227,10 @@ export const PrintersPage: React.FC = () => {
   const handleSaveNewPrinter = async () => {
     if (!user?.shop_id) {
       toast.error('Shop session expired');
+      return;
+    }
+    if (!selectedDetectedPrinterHwId) {
+      toast.error('Select an installed printer from the list first');
       return;
     }
     if (!formPrinterName.trim()) {
@@ -212,11 +241,19 @@ export const PrintersPage: React.FC = () => {
     setSavingPrinter(true);
     try {
       const isColor = formColorMode === 'color' || formColorMode === 'both';
+      const isBw = formColorMode === 'bw' || formColorMode === 'both';
+      const isDuplex = formSideMode === 'duplex' || formSideMode === 'both';
+      const isSingleSide = formSideMode === 'single' || formSideMode === 'both';
+      const usageType = formColorMode === 'color' ? 'Color Only' : formColorMode === 'bw' ? 'B&W Only' : 'All';
       const connLabel =
         formConnectionType === 'wifi'
           ? 'Wi-Fi'
           : formConnectionType === 'lan'
           ? 'LAN'
+          : formConnectionType === 'network'
+          ? 'Network'
+          : formConnectionType === 'windows'
+          ? 'Windows Spooler'
           : 'USB';
 
       const newPrinterPayload: Partial<ShopPrinter> = {
@@ -229,21 +266,22 @@ export const PrintersPage: React.FC = () => {
         status: formStatus,
         is_online: formStatus === 'online',
         is_color: isColor,
-        is_duplex: formDuplex,
+        is_duplex: isDuplex,
+        usage_type: usageType,
         paper_sizes: formPaperSizes,
-        paper_types: ['Standard 75 GSM', 'Bond Paper', 'Glossy', 'Executive'],
+        paper_types: formPaperTypes,
         is_default: false,
         capabilities: {
           color: isColor,
-          bw: true,
-          single_side: true,
-          double_side: formDuplex,
+          bw: isBw,
+          single_side: isSingleSide,
+          double_side: isDuplex,
         },
       };
 
       const result = await shopkeeperApi.addPrinter(newPrinterPayload);
       if (result) {
-        toast.success(`Physical Printer "${formPrinterName}" saved to database!`);
+        toast.success(`Printer "${formPrinterName}" saved to configuration!`);
         await refreshPrinters();
         setAddModalOpen(false);
       } else {
@@ -272,6 +310,11 @@ export const PrintersPage: React.FC = () => {
     setEditPaperSizes(
       printer.paper_sizes && printer.paper_sizes.length > 0 ? [...printer.paper_sizes] : ['A4']
     );
+    setEditPaperTypes(
+      printer.paper_types && printer.paper_types.length > 0
+        ? [...printer.paper_types]
+        : ['Standard 75 GSM']
+    );
     setEditModalOpen(true);
   };
 
@@ -294,6 +337,7 @@ export const PrintersPage: React.FC = () => {
         is_duplex: isDuplex,
         usage_type: usageType,
         paper_sizes: editPaperSizes,
+        paper_types: editPaperTypes,
         capabilities: {
           color: isColor,
           bw: isBw,
@@ -379,14 +423,24 @@ export const PrintersPage: React.FC = () => {
     }
   };
 
-  // Filter printers: by selected PC and strictly allow physical printers and explicitly added virtual printers
+  // Show only configured printers assigned to the selected counter PC.
   const displayedPrinters = useMemo(() => {
-    const validPrinters = realPrinters.filter(
-      (p) => isPhysicalPrinter(p.name) || isAllowedVirtualPrinter(p.name)
-    );
-    if (!selectedPcId || selectedPcId === 'all') return validPrinters;
-    return validPrinters.filter((p) => !p.pc_id || p.pc_id === selectedPcId);
+    if (!selectedPcId || selectedPcId === 'all') return realPrinters;
+    return realPrinters.filter((p) => !p.pc_id || p.pc_id === selectedPcId);
   }, [realPrinters, selectedPcId]);
+
+  const availableDetectedPrinters = useMemo(
+    () =>
+      detectedPrinters.filter(
+        (detected) =>
+          !realPrinters.some(
+            (configured) =>
+              (detected.hardware_id && configured.hardware_id === detected.hardware_id) ||
+              configured.name.trim().toLowerCase() === detected.name.trim().toLowerCase()
+          )
+      ),
+    [detectedPrinters, realPrinters]
+  );
 
   // Manually Add Virtual Printer (Microsoft Print to PDF or Normal PDF Printer)
   const handleAddVirtualPrinter = async () => {
@@ -411,7 +465,7 @@ export const PrintersPage: React.FC = () => {
         is_color: isColor,
         is_duplex: virtualDuplex,
         paper_sizes: virtualPaperSizes,
-        paper_types: ['Standard 75 GSM', 'Bond Paper', 'Glossy'],
+        paper_types: virtualPaperTypes,
         is_default: false,
         usage_type:
           virtualColorMode === 'color' ? 'Color Only' : virtualColorMode === 'bw' ? 'B&W Only' : 'All',
@@ -458,7 +512,7 @@ export const PrintersPage: React.FC = () => {
             Printer Configuration
           </h1>
           <p className="text-xs text-muted-foreground font-sans">
-            Manage physical printers connected to workshop counter workstations for direct queue output.
+            Manage printer drivers explicitly added to workshop counter workstations for direct queue output.
           </p>
         </div>
 
@@ -521,10 +575,10 @@ export const PrintersPage: React.FC = () => {
         <Card className="bg-card border-border rounded-xl p-12 text-center shadow-sm">
           <Printer className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
           <h3 className="text-base font-heading font-bold uppercase text-foreground">
-            No Physical Printers Configured Yet
+            No Printers Configured Yet
           </h3>
           <p className="text-xs text-muted-foreground max-w-sm mx-auto mt-1 mb-5 font-sans">
-            Virtual printers (PDF, XPS, Fax, OneNote) are filtered out. Click &quot;+ Add Printer&quot; to detect and configure physical printing hardware connected to your counter PC.
+            Select an installed printer driver from &quot;+ Add Printer&quot; to add it to this configuration.
           </p>
           <Button
             onClick={handleOpenAddPrinterModal}
@@ -628,6 +682,12 @@ export const PrintersPage: React.FC = () => {
                         {printer.paper_sizes?.join(', ') || 'A4'}
                       </strong>
                     </div>
+                    <div className="flex justify-between text-[11px] text-muted-foreground">
+                      <span>Paper Types:</span>
+                      <strong className="text-foreground font-mono text-right">
+                        {printer.paper_types?.join(', ') || 'Standard 75 GSM'}
+                      </strong>
+                    </div>
 
                     {/* ASSIGN TO COUNTER PC DROPDOWN */}
                     <div className="pt-2 border-t border-border/60 space-y-1.5">
@@ -719,19 +779,19 @@ export const PrintersPage: React.FC = () => {
           <DialogHeader>
             <DialogTitle className="text-base font-heading font-bold uppercase text-foreground flex items-center gap-2">
               <Printer className="w-5 h-5 text-primary" />
-              <span>Connect Physical Printer</span>
+              <span>Add Installed Printer</span>
             </DialogTitle>
             <DialogDescription className="text-xs text-muted-foreground">
-              Select an actual physical printer detected on your counter workstation.
+              Select a printer driver installed on this workstation. It will be added to your configuration after saving.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-2 text-xs">
-            {/* Auto-detected physical printers dropdown */}
+            {/* Installed printer drivers dropdown */}
             <div className="space-y-1.5 p-3 rounded-lg bg-muted/40 border border-border">
               <div className="flex items-center justify-between">
                 <Label className="text-xs font-semibold text-foreground">
-                  Detected Physical Printers ({detectedPrinters.length})
+                  Available Printers ({availableDetectedPrinters.length})
                 </Label>
                 <Button
                   type="button"
@@ -746,14 +806,15 @@ export const PrintersPage: React.FC = () => {
                 </Button>
               </div>
 
-              {detectedPrinters.length > 0 ? (
+              {availableDetectedPrinters.length > 0 ? (
                 <select
                   value={selectedDetectedPrinterHwId}
                   onChange={(e) => handleSelectDetectedPrinter(e.target.value)}
                   className="w-full h-9 px-3 rounded-lg border border-border bg-background text-foreground font-mono text-xs focus:ring-1 focus:ring-primary"
                 >
-                  {detectedPrinters.map((p) => (
-                    <option key={p.hardware_id} value={p.hardware_id}>
+                  <option value="">Select a printer driver</option>
+                  {availableDetectedPrinters.map((p) => (
+                    <option key={p.hardware_id || p.id} value={p.hardware_id || p.id}>
                       {p.name} [{p.connection_type}] {p.is_color ? '(Color)' : '(B&W)'}
                     </option>
                   ))}
@@ -761,11 +822,15 @@ export const PrintersPage: React.FC = () => {
               ) : (
                 <p className="text-[11px] text-muted-foreground font-sans">
                   {detectionMessage ||
-                    'No physical printers detected. Start QZ Tray on this computer, then select Rescan.'}
+                    (detectedPrinters.length > 0
+                      ? 'All installed printers are already added to this configuration.'
+                      : 'No printer drivers detected. Start QZ Tray on this computer, then select Rescan.')}
                 </p>
               )}
             </div>
 
+            {selectedDetectedPrinterHwId && (
+              <>
             {/* Manual details form */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
@@ -795,12 +860,18 @@ export const PrintersPage: React.FC = () => {
                 <Label className="text-xs font-semibold text-foreground">Connection Interface</Label>
                 <select
                   value={formConnectionType}
-                  onChange={(e) => handleConnectionTypeChange(e.target.value as any)}
+                  onChange={(e) =>
+                    handleConnectionTypeChange(
+                      e.target.value as 'network' | 'usb' | 'wifi' | 'lan' | 'windows'
+                    )
+                  }
                   className="w-full h-9 px-3 rounded-lg border border-border bg-background text-foreground text-xs focus:ring-1 focus:ring-primary"
                 >
                   <option value="wifi">Wi-Fi / Wireless Network</option>
                   <option value="lan">LAN / Ethernet Cable</option>
                   <option value="usb">USB Direct Cable</option>
+                  <option value="network">Network Printer</option>
+                  <option value="windows">Windows Spooler</option>
                 </select>
               </div>
 
@@ -836,47 +907,41 @@ export const PrintersPage: React.FC = () => {
               </div>
 
               <div className="space-y-1">
-                <Label className="text-xs font-semibold text-foreground">Duplex (Double Sided)</Label>
-                <div className="flex items-center gap-2 pt-2">
-                  <Switch checked={formDuplex} onCheckedChange={setFormDuplex} />
-                  <span className="text-xs text-muted-foreground">
-                    {formDuplex ? 'Auto Duplex Supported' : 'Single Side Only'}
-                  </span>
-                </div>
+                <Label className="text-xs font-semibold text-foreground">Side Printing Support</Label>
+                <select
+                  value={formSideMode}
+                  onChange={(e) => setFormSideMode(e.target.value as 'both' | 'single' | 'duplex')}
+                  className="w-full h-9 px-3 rounded-lg border border-border bg-background text-foreground text-xs"
+                >
+                  <option value="both">Single Side &amp; Back-to-Back</option>
+                  <option value="single">Single Side Only</option>
+                  <option value="duplex">Back-to-Back Only</option>
+                </select>
               </div>
             </div>
 
-            {/* Paper Sizes */}
-            <div className="space-y-1.5 pt-1">
-              <Label className="text-xs font-semibold text-foreground">Supported Paper Sizes</Label>
-              <div className="flex flex-wrap gap-2">
-                {['A4', 'A3', 'Legal', 'Letter'].map((size) => {
-                  const active = formPaperSizes.includes(size);
-                  return (
-                    <button
-                      key={size}
-                      type="button"
-                      onClick={() => {
-                        if (active) {
-                          if (formPaperSizes.length > 1) {
-                            setFormPaperSizes(formPaperSizes.filter((s) => s !== size));
-                          }
-                        } else {
-                          setFormPaperSizes([...formPaperSizes, size]);
-                        }
-                      }}
-                      className={`px-2.5 py-1 rounded-md text-xs font-mono font-medium border transition-colors ${
-                        active
-                          ? 'bg-primary text-primary-foreground border-primary font-bold'
-                          : 'bg-background text-muted-foreground border-border hover:bg-muted'
-                      }`}
-                    >
-                      {size}
-                    </button>
-                  );
-                })}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold text-foreground">Supported Paper Sizes</Label>
+                <MultiOptionDropdown
+                  label="paper sizes"
+                  options={PRINTER_PAPER_SIZES}
+                  value={formPaperSizes}
+                  onChange={setFormPaperSizes}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold text-foreground">Supported Paper Types</Label>
+                <MultiOptionDropdown
+                  label="paper types"
+                  options={PRINTER_PAPER_TYPES}
+                  value={formPaperTypes}
+                  onChange={setFormPaperTypes}
+                />
               </div>
             </div>
+              </>
+            )}
           </div>
 
           <DialogFooter className="gap-2 sm:gap-0">
@@ -890,7 +955,7 @@ export const PrintersPage: React.FC = () => {
             </Button>
             <Button
               onClick={handleSaveNewPrinter}
-              disabled={savingPrinter}
+              disabled={savingPrinter || !selectedDetectedPrinterHwId}
               className="bg-primary hover:bg-primary/90 text-primary-foreground text-xs font-bold rounded-lg px-4"
             >
               {savingPrinter ? 'Saving...' : 'Save & Register Printer'}
@@ -934,35 +999,24 @@ export const PrintersPage: React.FC = () => {
                 </select>
               </div>
 
-              {/* Supported Paper Sizes */}
-              <div className="space-y-1.5 pt-1">
-                <Label className="text-xs font-semibold text-foreground">Supported Paper Sizes</Label>
-                <div className="flex flex-wrap gap-2">
-                  {['A4', 'A3', 'Legal', 'Letter'].map((size) => {
-                    const active = editPaperSizes.includes(size);
-                    return (
-                      <button
-                        key={size}
-                        type="button"
-                        onClick={() => {
-                          if (active) {
-                            if (editPaperSizes.length > 1) {
-                              setEditPaperSizes(editPaperSizes.filter((s) => s !== size));
-                            }
-                          } else {
-                            setEditPaperSizes([...editPaperSizes, size]);
-                          }
-                        }}
-                        className={`px-2.5 py-1 rounded-md text-xs font-mono font-medium border transition-colors ${
-                          active
-                            ? 'bg-primary text-primary-foreground border-primary font-bold'
-                            : 'bg-background text-muted-foreground border-border hover:bg-muted'
-                        }`}
-                      >
-                        {size}
-                      </button>
-                    );
-                  })}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold text-foreground">Supported Paper Sizes</Label>
+                  <MultiOptionDropdown
+                    label="paper sizes"
+                    options={PRINTER_PAPER_SIZES}
+                    value={editPaperSizes}
+                    onChange={setEditPaperSizes}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-semibold text-foreground">Supported Paper Types</Label>
+                  <MultiOptionDropdown
+                    label="paper types"
+                    options={PRINTER_PAPER_TYPES}
+                    value={editPaperTypes}
+                    onChange={setEditPaperTypes}
+                  />
                 </div>
               </div>
 
@@ -1086,35 +1140,24 @@ export const PrintersPage: React.FC = () => {
               </select>
             </div>
 
-            {/* Supported Paper Sizes */}
-            <div className="space-y-1.5">
-              <Label className="text-xs font-semibold text-foreground">Supported Paper Sizes</Label>
-              <div className="flex flex-wrap gap-2">
-                {['A4', 'A3', 'Legal', 'Letter'].map((size) => {
-                  const active = virtualPaperSizes.includes(size);
-                  return (
-                    <button
-                      key={size}
-                      type="button"
-                      onClick={() => {
-                        if (active) {
-                          if (virtualPaperSizes.length > 1) {
-                            setVirtualPaperSizes(virtualPaperSizes.filter((s) => s !== size));
-                          }
-                        } else {
-                          setVirtualPaperSizes([...virtualPaperSizes, size]);
-                        }
-                      }}
-                      className={`px-2.5 py-1 rounded-md text-xs font-mono font-medium border transition-colors ${
-                        active
-                          ? 'bg-primary text-primary-foreground border-primary font-bold'
-                          : 'bg-background text-muted-foreground border-border hover:bg-muted'
-                      }`}
-                    >
-                      {size}
-                    </button>
-                  );
-                })}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold text-foreground">Supported Paper Sizes</Label>
+                <MultiOptionDropdown
+                  label="paper sizes"
+                  options={PRINTER_PAPER_SIZES}
+                  value={virtualPaperSizes}
+                  onChange={setVirtualPaperSizes}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs font-semibold text-foreground">Supported Paper Types</Label>
+                <MultiOptionDropdown
+                  label="paper types"
+                  options={PRINTER_PAPER_TYPES}
+                  value={virtualPaperTypes}
+                  onChange={setVirtualPaperTypes}
+                />
               </div>
             </div>
 

@@ -628,7 +628,21 @@ export const OrdersPage: React.FC = () => {
       } else {
         // 100% completed!
         await shopkeeperApi.saveOrderPrintedSegments(ord.id, allPrinted, [], 'Completed');
-        setOrders((prev) => prev.filter((o) => o.id !== ord.id));
+        const completedAt = new Date().toISOString();
+        setOrders((prev) =>
+          prev.map((o) =>
+            o.id === ord.id
+              ? {
+                  ...o,
+                  order_status: 'Completed',
+                  printed_segments: allPrinted,
+                  remaining_pages_info: [],
+                  completed_at: completedAt,
+                  updated_at: completedAt,
+                }
+              : o
+          )
+        );
 
         toast.success(
           `Order #${ord.token_number} (${segmentPlans.length} segment${segmentPlans.length > 1 ? 's' : ''}) printed completely!`,
@@ -2033,9 +2047,26 @@ export const OrdersPage: React.FC = () => {
         }}
         onMarkCompleted={async () => {
           if (!summaryActiveOrder) return;
+          if (summaryPendingSegments.length > 0) {
+            toast.info('Print all pending segments before completing this order.');
+            return;
+          }
           try {
             await shopkeeperApi.updateOrderStatus(summaryActiveOrder.id, 'Completed');
-            setOrders((prev) => prev.filter((o) => o.id !== summaryActiveOrder.id));
+            const completedAt = new Date().toISOString();
+            setOrders((prev) =>
+              prev.map((o) =>
+                o.id === summaryActiveOrder.id
+                  ? {
+                      ...o,
+                      order_status: 'Completed',
+                      remaining_pages_info: [],
+                      completed_at: completedAt,
+                      updated_at: completedAt,
+                    }
+                  : o
+              )
+            );
             setPartialSummaryOpen(false);
             toast.success(`Order #${summaryActiveOrder.token_number} marked as Completed and moved to Recent History.`);
             fetchOrders();
