@@ -1,6 +1,7 @@
 import qz from 'qz-tray';
 import type { DetectedPrinter } from '@/types/shopkeeper';
 import { clearQzAuthToken, getQzAuthToken } from '@/lib/qzAuth';
+import { createFunctionError } from '@/lib/supabaseFunctionError';
 
 export type { DetectedPrinter };
 
@@ -140,12 +141,12 @@ class QzTrayService {
               Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
             },
           })
-            .then((res) => {
+            .then(async (res) => {
               if (res.status === 401) {
                 clearQzAuthToken();
                 throw new Error('QZ authorization expired or is invalid. Sign in again to enable secure printing.');
               }
-              if (!res.ok) throw new Error(`Certificate fetch failed (${res.status})`);
+              if (!res.ok) throw await createFunctionError(res, 'Certificate fetch');
               return res.text();
             })
             .then((cert) => resolve(cert.trim()))
@@ -168,12 +169,12 @@ class QzTrayService {
               },
               body: JSON.stringify({ request: toSign }),
             })
-              .then((res) => {
+              .then(async (res) => {
                 if (res.status === 401) {
                   clearQzAuthToken();
                   throw new Error('QZ authorization expired or is invalid. Sign in again to enable secure printing.');
                 }
-                if (!res.ok) throw new Error(`Signing request failed (${res.status})`);
+                if (!res.ok) throw await createFunctionError(res, 'Signing request');
                 return res.text();
               })
               .then((signature) => resolve(signature.trim()))

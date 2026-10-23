@@ -1,17 +1,15 @@
 declare const Deno: {
+  env: { get(name: string): string | undefined };
   serve(handler: (req: Request) => Response | Promise<Response>): void;
-  env: {
-    get(name: string): string | undefined;
-  };
 };
 
-const corsHeaders = {
+const qzAuthCorsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-const encoder = new TextEncoder();
+const qzAuthEncoder = new TextEncoder();
 
 function encodeBase64Url(bytes: Uint8Array): string {
   let binary = '';
@@ -20,32 +18,32 @@ function encodeBase64Url(bytes: Uint8Array): string {
 }
 
 async function sha256(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(value));
+  const digest = await crypto.subtle.digest('SHA-256', qzAuthEncoder.encode(value));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 async function signToken(payload: { sub: string; shop_id: string; exp: number }, secret: string): Promise<string> {
-  const payloadPart = encodeBase64Url(encoder.encode(JSON.stringify(payload)));
+  const payloadPart = encodeBase64Url(qzAuthEncoder.encode(JSON.stringify(payload)));
   const key = await crypto.subtle.importKey(
     'raw',
-    encoder.encode(secret),
+    qzAuthEncoder.encode(secret),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign']
   );
-  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(payloadPart));
+  const signature = await crypto.subtle.sign('HMAC', key, qzAuthEncoder.encode(payloadPart));
   return `${payloadPart}.${encodeBase64Url(new Uint8Array(signature))}`;
 }
 
 function response(body: string, status: number): Response {
   return new Response(body, {
     status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...qzAuthCorsHeaders, 'Content-Type': 'application/json' },
   });
 }
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: qzAuthCorsHeaders });
   if (req.method !== 'POST') return response(JSON.stringify({ error: 'Method not allowed' }), 405);
 
   try {
