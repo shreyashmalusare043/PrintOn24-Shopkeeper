@@ -2533,8 +2533,20 @@ export const shopkeeperApi = {
       printer.capabilities?.single_side !== false;
 
     const supportedSizes = (printer.paper_sizes || ['A4']).map((s: string) => s.trim().toUpperCase());
-    const normalizePaperType = (type: string) =>
-      type.trim().toLowerCase().replace(/\s+paper$/, '');
+    const normalizePaperType = (type: string) => {
+      const normalized = type
+        .trim()
+        .toLowerCase()
+        .replace(/[_-]+/g, ' ')
+        .replace(/\s+paper$/, '')
+        .replace(/\s+/g, ' ');
+
+      if (/^(standard|plain)(\s+(75\s*gsm))?$/.test(normalized) || /^75\s*gsm$/.test(normalized)) {
+        return 'standard';
+      }
+
+      return normalized;
+    };
     const supportedPaperTypes = (printer.paper_types || []).map(normalizePaperType);
 
     const checkPaperType = (requestedType?: string) => {
@@ -2658,11 +2670,17 @@ export const shopkeeperApi = {
       .map((e) => e.printer);
 
     if (compatiblePrinters.length === 0) {
-      const reqSummary = `Paper: ${configToMatch.pageSize || order.config_page_size || 'A4'}, Color: ${configToMatch.printType || order.config_print_type || 'B&W'}, Duplex: ${configToMatch.sides || order.config_sides || 'Single Side'}`;
+      const requestedPaperType =
+        configToMatch.paperType || configToMatch.paper_type || order.config_paper_type;
+      const reqSummary = `Paper: ${configToMatch.pageSize || order.config_page_size || 'A4'}, Color: ${configToMatch.printType || order.config_print_type || 'B&W'}, Duplex: ${configToMatch.sides || order.config_sides || 'Single Side'}${requestedPaperType ? `, Paper type: ${requestedPaperType}` : ''}`;
+      const incompatibilityDetails = allEvaluations
+        .filter(({ reasons }) => reasons.length > 0)
+        .map(({ printer, reasons }) => `${printer.name}: ${reasons.join(' ')}`)
+        .join(' ');
       return {
         compatiblePrinter: null,
         allEvaluations,
-        reasonIfNotCompatible: `No compatible printer found. Order requires [${reqSummary}]. None of the ${physicalOnly.length} configured printer(s) satisfy all conditions.`,
+        reasonIfNotCompatible: `No compatible printer found. Order requires [${reqSummary}]. None of the ${physicalOnly.length} configured printer(s) satisfy all conditions.${incompatibilityDetails ? ` ${incompatibilityDetails}` : ''}`,
       };
     }
 
