@@ -87,6 +87,7 @@ export const OrdersPage: React.FC = () => {
   const { user, selectedPcId, setSelectedPcId, pcs, t, realPrinters } = useShopkeeper();
 
   const [orders, setOrders] = useState<PrintOrder[]>([]);
+  const [recentHistoryOrders, setRecentHistoryOrders] = useState<PrintOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'All' | 'Active' | 'Completed' | 'Cancelled'>('Active');
@@ -202,13 +203,26 @@ export const OrdersPage: React.FC = () => {
     }
   };
 
+  const fetchRecentHistoryOrders = async () => {
+    if (!user?.shop_id) return;
+    try {
+      const data = await shopkeeperApi.getRecentHistoryOrders(user.shop_id);
+      setRecentHistoryOrders(data);
+    } catch (err) {
+      console.error('Failed to load recent order history:', err);
+      toast.error('Failed to load recent order history');
+    }
+  };
+
   useEffect(() => {
     fetchSettings();
     fetchOrders();
+    fetchRecentHistoryOrders();
 
     if (!user?.shop_id) return;
     const sub = shopkeeperApi.subscribeToOrders(user.shop_id, () => {
       fetchOrders();
+      fetchRecentHistoryOrders();
     });
 
     return () => {
@@ -516,10 +530,9 @@ export const OrdersPage: React.FC = () => {
 
       const newlyPrinted: PrintedSegment[] = [];
 
-      // Step 6: Dispatch each compatible segment to its matching printer with its own configuration
-      for (let i = 0; i < segmentPlans.length; i++) {
-        const plan = segmentPlans[i];
-
+      // Confirm manual duplex jobs first so dialog state is never shared by concurrent tasks.
+      const plansToDispatch: typeof segmentPlans = [];
+      for (const plan of segmentPlans) {
         // Item 5: Manual Duplex confirmation if printer requires manual reinsertion
         const printerDriver = plan.printer.driver_name?.toLowerCase() || '';
         const isManualDuplex = plan.duplex === 'Back-to-Back' && (printerDriver.includes('manual') || (plan.printer as any).manual_duplex === true);
@@ -544,47 +557,64 @@ export const OrdersPage: React.FC = () => {
           }
         }
 
-        const res = await localPrintAgent.dispatchPrintJob({
-          orderId: ord.id,
-          shopId: ord.shop_id,
-          pcId: plan.printer.pc_id || ord.target_pc_id || selectedPcId || '',
-          printerId: plan.printer.id,
-          printerName: plan.printer.name,
-          fileName: plan.docName,
-          fileUrl: plan.sourceDocUrl,
-          copies: plan.copies,
-          colorMode: plan.colorMode,
-          duplex: plan.duplex,
-          paperSize: plan.pageSize,
-          paperType: plan.paperType,
-          pageCount: plan.pageCount,
-          pageRange: plan.pageRange,
-          totalPrice: Number(ord.grand_total) || 0,
-        });
-
-        if (!res.success) {
-          pendingSegments.push({
-            docName: plan.docName,
-            pageRange: plan.pageRange,
-            reason: res.message || 'Printer physical dispatch error',
-            pagesCount: plan.pageCount,
-          });
-        } else {
-          newlyPrinted.push({
-            id: `seg-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-            doc_id: plan.docId,
-            doc_name: plan.docName,
-            page_range: plan.pageRange || 'All Pages',
-            pages_count: plan.pageCount || 1,
-            printer_name: plan.printer.name,
-            printed_at: new Date().toISOString(),
-            status: 'printed',
-            color_mode: plan.colorMode,
-            duplex: plan.duplex,
-            copies: plan.copies,
-          });
-        }
+        plansToDispatch.push(plan);
       }
+
+      // Keep each printer's queue sequential while dispatching independent printers concurrently.
+      const plansByPrinter = new Map<string, typeof segmentPlans>();
+      for (const plan of plansToDispatch) {
+        const printerKey = plan.printer.id || plan.printer.name;
+        const printerPlans = plansByPrinter.get(printerKey) || [];
+        printerPlans.push(plan);
+        plansByPrinter.set(printerKey, printerPlans);
+      }
+
+      await Promise.all(
+        Array.from(plansByPrinter.values(), async (printerPlans) => {
+          for (const plan of printerPlans) {
+            const res = await localPrintAgent.dispatchPrintJob({
+              orderId: ord.id,
+              shopId: ord.shop_id,
+              pcId: plan.printer.pc_id || ord.target_pc_id || selectedPcId || '',
+              printerId: plan.printer.id,
+              printerName: plan.printer.name,
+              fileName: plan.docName,
+              fileUrl: plan.sourceDocUrl,
+              copies: plan.copies,
+              colorMode: plan.colorMode,
+              duplex: plan.duplex,
+              paperSize: plan.pageSize,
+              paperType: plan.paperType,
+              pageCount: plan.pageCount,
+              pageRange: plan.pageRange,
+              totalPrice: Number(ord.grand_total) || 0,
+            });
+
+            if (!res.success) {
+              pendingSegments.push({
+                docName: plan.docName,
+                pageRange: plan.pageRange,
+                reason: res.message || 'Printer physical dispatch error',
+                pagesCount: plan.pageCount,
+              });
+            } else {
+              newlyPrinted.push({
+                id: `seg-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+                doc_id: plan.docId,
+                doc_name: plan.docName,
+                page_range: plan.pageRange || 'All Pages',
+                pages_count: plan.pageCount || 1,
+                printer_name: plan.printer.name,
+                printed_at: new Date().toISOString(),
+                status: 'printed',
+                color_mode: plan.colorMode,
+                duplex: plan.duplex,
+                copies: plan.copies,
+              });
+            }
+          }
+        })
+      );
 
       const allPrinted = [...alreadyPrinted, ...newlyPrinted];
 
@@ -629,20 +659,24 @@ export const OrdersPage: React.FC = () => {
         // 100% completed!
         await shopkeeperApi.saveOrderPrintedSegments(ord.id, allPrinted, [], 'Completed');
         const completedAt = new Date().toISOString();
+        const completedOrder = {
+          ...ord,
+          order_status: 'Completed' as const,
+          printed_segments: allPrinted,
+          remaining_pages_info: [],
+          completed_at: completedAt,
+        };
         setOrders((prev) =>
           prev.map((o) =>
             o.id === ord.id
-              ? {
-                  ...o,
-                  order_status: 'Completed',
-                  printed_segments: allPrinted,
-                  remaining_pages_info: [],
-                  completed_at: completedAt,
-                  updated_at: completedAt,
-                }
+              ? completedOrder
               : o
           )
         );
+        setRecentHistoryOrders((prev) => [
+          completedOrder,
+          ...prev.filter((order) => order.id !== ord.id),
+        ]);
 
         toast.success(
           `Order #${ord.token_number} (${segmentPlans.length} segment${segmentPlans.length > 1 ? 's' : ''}) printed completely!`,
@@ -970,11 +1004,12 @@ export const OrdersPage: React.FC = () => {
     }
 
     try {
+      const dismissedAt = new Date().toISOString();
       const { error } = await supabase
         .from('print_orders')
         .update({
           order_status: 'Dismissed',
-          updated_at: new Date().toISOString(),
+          completed_at: dismissedAt,
         })
         .eq('id', ord.id);
 
@@ -986,10 +1021,14 @@ export const OrdersPage: React.FC = () => {
       setOrders((prev) =>
         prev.map((o) =>
           o.id === ord.id
-            ? { ...o, order_status: 'Dismissed', updated_at: new Date().toISOString() }
+            ? { ...o, order_status: 'Dismissed', completed_at: dismissedAt }
             : o
         )
       );
+      setRecentHistoryOrders((prev) => [
+        { ...ord, order_status: 'Dismissed', completed_at: dismissedAt },
+        ...prev.filter((order) => order.id !== ord.id),
+      ]);
       toast.success(`Order #${ord.token_number || ord.order_number} dismissed and moved to Recent History`);
     } catch (err: any) {
       toast.error(`Failed to dismiss order: ${err?.message || err}`);
@@ -1077,21 +1116,12 @@ export const OrdersPage: React.FC = () => {
     return false;
   };
 
-  // Recent History: latest completed or dismissed orders strictly within 8 hours based on actual DB timestamp
+  // Recent history is fetched separately so the active queue's PC filter and 100-order limit do not hide it.
   const completedHistoryOrders = useMemo(() => {
-    const eightHoursAgo = Date.now() - 8 * 60 * 60 * 1000;
-    return orders
-      .filter((o) => {
-        if (o.order_status !== 'Completed' && o.order_status !== 'Dismissed') return false;
-        const completionTime = new Date(o.completed_at || o.updated_at || o.created_at || 0).getTime();
-        return completionTime >= eightHoursAgo;
-      })
-      .sort((a, b) => {
-        const timeB = new Date(b.completed_at || b.updated_at || b.created_at || 0).getTime();
-        const timeA = new Date(a.completed_at || a.updated_at || a.created_at || 0).getTime();
-        return timeB - timeA;
-      });
-  }, [orders]);
+    return recentHistoryOrders.filter(
+      (order) => order.order_status === 'Completed' || order.order_status === 'Dismissed'
+    );
+  }, [recentHistoryOrders]);
 
   // Sort orders with pinned rows always on top
   const sortedFilteredOrders = useMemo(() => {
@@ -2054,19 +2084,23 @@ export const OrdersPage: React.FC = () => {
           try {
             await shopkeeperApi.updateOrderStatus(summaryActiveOrder.id, 'Completed');
             const completedAt = new Date().toISOString();
+            const completedOrder = {
+              ...summaryActiveOrder,
+              order_status: 'Completed' as const,
+              remaining_pages_info: [],
+              completed_at: completedAt,
+            };
             setOrders((prev) =>
               prev.map((o) =>
                 o.id === summaryActiveOrder.id
-                  ? {
-                      ...o,
-                      order_status: 'Completed',
-                      remaining_pages_info: [],
-                      completed_at: completedAt,
-                      updated_at: completedAt,
-                    }
+                  ? completedOrder
                   : o
               )
             );
+            setRecentHistoryOrders((prev) => [
+              completedOrder,
+              ...prev.filter((order) => order.id !== summaryActiveOrder.id),
+            ]);
             setPartialSummaryOpen(false);
             toast.success(`Order #${summaryActiveOrder.token_number} marked as Completed and moved to Recent History.`);
             fetchOrders();

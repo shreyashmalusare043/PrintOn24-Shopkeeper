@@ -239,7 +239,13 @@ export const GoForPrintModal: React.FC = () => {
       setPrintStatusMsg(`Print job sent to physical Windows printer [${activePrinter.name}].`);
       setCompletedJobId(res.jobId);
       setCurrentStep('completed');
-      toast.success(res.message);
+      if (res.statusPersisted === false) {
+        toast.warning('Document printed, but order status was not saved', {
+          description: res.message,
+        });
+      } else {
+        toast.success(res.message);
+      }
     } catch (err: any) {
       toast.error(err?.message || 'Print dispatch failed.');
       setCurrentStep('configure');

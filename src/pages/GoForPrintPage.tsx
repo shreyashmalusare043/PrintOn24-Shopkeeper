@@ -178,13 +178,24 @@ export const GoForPrintPage: React.FC = () => {
       });
 
       if (result.success) {
-        toast.success(result.message || `Printed directly on ${matchedPrinter.name}!`, {
-          description: `Order Token #${order.token_number} (${order.document_name}) completed.`,
-        });
+        const completedAt = new Date().toISOString();
         // Optimistically update local order state
         setOrders((prev) =>
-          prev.map((o) => (o.id === order.id ? { ...o, order_status: 'Completed' } : o))
+          prev.map((o) =>
+            o.id === order.id
+              ? { ...o, order_status: 'Completed', completed_at: completedAt }
+              : o
+          )
         );
+        if (result.statusPersisted === false) {
+          toast.warning('Document printed, but order status was not saved', {
+            description: result.message,
+          });
+        } else {
+          toast.success(result.message || `Printed directly on ${matchedPrinter.name}!`, {
+            description: `Order Token #${order.token_number} (${order.document_name}) completed.`,
+          });
+        }
       } else {
         toast.error('Direct print failed', {
           description: result.message,

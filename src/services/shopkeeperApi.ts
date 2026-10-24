@@ -1109,6 +1109,7 @@ export const shopkeeperApi = {
     success: boolean;
     jobId: string;
     message: string;
+    statusPersisted?: boolean;
   }> {
     const jobId = `job_${Date.now()}`;
 
@@ -1197,17 +1198,34 @@ export const shopkeeperApi = {
         .eq('id', jobId);
 
       // If order is completed, update order status
+      let statusPersisted = true;
+      let statusWarning = '';
       if (payload.orderId) {
-        await supabase
-          .from('print_orders')
-          .update({ order_status: 'Completed' })
-          .eq('id', payload.orderId);
+        try {
+          const { data, error } = await supabase
+            .from('print_orders')
+            .update({ order_status: 'Completed', completed_at: new Date().toISOString() })
+            .eq('id', payload.orderId)
+            .select('id')
+            .maybeSingle();
+
+          if (error || !data) {
+            statusPersisted = false;
+            statusWarning = error?.message || 'The order record was not updated.';
+          }
+        } catch (err: any) {
+          statusPersisted = false;
+          statusWarning = err?.message || 'The order record could not be updated.';
+        }
       }
 
       return {
         success: true,
         jobId,
-        message: agentResult.message || `Physical print completed successfully on ${payload.printerName}!`,
+        statusPersisted,
+        message: statusPersisted
+          ? agentResult.message || `Physical print completed successfully on ${payload.printerName}!`
+          : `Printed successfully, but the order status could not be saved: ${statusWarning}`,
       };
     } catch (err: any) {
       await supabase
@@ -1614,7 +1632,7 @@ export const shopkeeperApi = {
       print_config?: any;
       total_pages?: number;
     };
-  }): Promise<{ success: boolean; message: string; jobId?: string }> {
+  }): Promise<{ success: boolean; message: string; jobId?: string; statusPersisted?: boolean }> {
     const { order, matchedPrinter, pcId, specificDoc } = params;
     const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
@@ -1724,15 +1742,36 @@ export const shopkeeperApi = {
         })
         .eq('id', jobId);
 
-      await supabase
-        .from('print_orders')
-        .update({ order_status: 'Completed', payment_status: 'Completed' })
-        .eq('id', order.id);
+      let statusPersisted = true;
+      let statusWarning = '';
+      try {
+        const { data, error } = await supabase
+          .from('print_orders')
+          .update({
+            order_status: 'Completed',
+            payment_status: 'Completed',
+            completed_at: new Date().toISOString(),
+          })
+          .eq('id', order.id)
+          .select('id')
+          .maybeSingle();
+
+        if (error || !data) {
+          statusPersisted = false;
+          statusWarning = error?.message || 'The order record was not updated.';
+        }
+      } catch (err: any) {
+        statusPersisted = false;
+        statusWarning = err?.message || 'The order record could not be updated.';
+      }
 
       return {
         success: true,
         jobId,
-        message: agentResult.message || `Dispatched to ${matchedPrinter.name} directly!`,
+        statusPersisted,
+        message: statusPersisted
+          ? agentResult.message || `Dispatched to ${matchedPrinter.name} directly!`
+          : `Printed successfully, but the order status could not be saved: ${statusWarning}`,
       };
     } catch (err: any) {
       await supabase
@@ -2075,6 +2114,26 @@ export const shopkeeperApi = {
     } catch {
       return [];
     }
+  },
+
+  async getRecentHistoryOrders(shopId: string): Promise<PrintOrder[]> {
+    const cutoff = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+    const { data, error } = await supabase
+      .from('print_orders')
+      .select('*')
+      .eq('shop_id', shopId)
+      .in('order_status', ['Completed', 'Dismissed'])
+      .gte('completed_at', cutoff)
+      .order('completed_at', { ascending: false })
+      .limit(100);
+
+    if (error) throw error;
+    return (data || []).map((order: any) => ({
+      ...order,
+      customer_name: order.customer_name || order.user_name || 'Customer',
+      user_name: order.user_name || order.customer_name || 'Customer',
+      user_phone: order.user_phone || order.customer_phone,
+    }));
   },
 
   async updateOrderStatus(orderId: string, status: string, paymentStatus?: string): Promise<boolean> {
