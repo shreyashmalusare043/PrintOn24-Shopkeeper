@@ -4,9 +4,9 @@ import { useShopkeeper } from '@/contexts/ShopkeeperContext';
 import { shopkeeperApi } from '@/services/shopkeeperApi';
 import { getUnprintedSubRanges, computeDocumentPageStatuses } from '@/utils/printRangeUtils';
 import {
+  clearDocumentCache,
   loadDocument,
   renderPdfPage,
-  renderThumbnail,
   renderDocumentToPrintDataUrl,
   type PdfDocumentWrapper,
 } from '@/services/pdfViewerService';
@@ -50,8 +50,14 @@ import { toast } from 'sonner';
 import { QzPermissionModal } from '@/components/QzPermissionModal';
 import { PartialPrintSummaryModal } from '@/components/PartialPrintSummaryModal';
 import { ManualDuplexModal } from '@/components/ManualDuplexModal';
+import { PrintProgressControls } from '@/components/PrintProgressControls';
+import { usePrintQueueControl } from '@/hooks/usePrintQueueControl';
+import {
+  PrintDocumentSelectionDialog,
+} from '@/components/PrintDocumentSelectionDialog';
 import { PrinterPropertiesDialog, type PrinterDriverSettings } from '@/components/modals/PrinterPropertiesDialog';
 import type { PrintedSegment } from '@/types/shopkeeper';
+import { isDuplexPrint, normalizePrintSides } from '@/utils/printSides';
 
 interface UnifiedPreviewPage {
   key: string;
@@ -85,7 +91,7 @@ interface UnifiedPreviewPage {
 export default function OrderPreviewPage() {
   const { orderId } = useParams<{ orderId: string }>();
   const navigate = useNavigate();
-  const { user } = useShopkeeper();
+  const { user, realPrinters } = useShopkeeper();
 
   // Core Data States
   const [loading, setLoading] = useState(true);
@@ -100,7 +106,11 @@ export default function OrderPreviewPage() {
   const [rotation, setRotation] = useState<number>(0);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
   const [sidebarTab, setSidebarTab] = useState<'thumbnails' | 'details'>('thumbnails');
+  const [, setRenderRevision] = useState(0);
   const [printing, setPrinting] = useState<boolean>(false);
+  const printQueue = usePrintQueueControl();
+  const [printSelectionOpen, setPrintSelectionOpen] = useState(false);
+  const [selectedPrintDocumentIds, setSelectedPrintDocumentIds] = useState<Set<string>>(new Set());
   const [summaryOpen, setSummaryOpen] = useState<boolean>(false);
   const [selectedConfigDocId, setSelectedConfigDocId] = useState<string | null>(null);
 
@@ -142,23 +152,25 @@ export default function OrderPreviewPage() {
 
       // Automatically select color mode submitted for this individual document
       const docSubmittedColorMode: 'B&W' | 'Color' =
-        (targetDoc?.print_config?.printType ||
-         targetDoc?.print_config?.color_mode ||
-         (targetDoc as any)?.print_type ||
-         order?.config_print_type ||
-         '')
+        String(
+          targetDoc?.print_config?.printType ||
+            targetDoc?.print_config?.color_mode ||
+            (targetDoc as any)?.print_type ||
+            order?.config_print_type ||
+            ''
+        )
           .toLowerCase()
           .includes('color')
           ? 'Color'
           : 'B&W';
 
       // Automatically detect and select orientation submitted/detected for this individual document
-      const docSubmittedOrientationRaw = (
+      const docSubmittedOrientationRaw = String(
         targetDoc?.print_config?.orientation ||
-        targetDoc?.print_config?.layout ||
-        (targetDoc as any)?.orientation ||
-        (order as any)?.config_orientation ||
-        ''
+          targetDoc?.print_config?.layout ||
+          (targetDoc as any)?.orientation ||
+          (order as any)?.config_orientation ||
+          ''
       ).toLowerCase();
 
       const docAutoOrientation: 'Portrait' | 'Landscape' =
@@ -194,11 +206,12 @@ export default function OrderPreviewPage() {
         specific?.orientation ??
         (targetDoc ? docAutoOrientation : (common.orientation || 'Portrait'));
 
-      const effectiveDuplex =
+      const effectiveDuplex = normalizePrintSides(
         specific?.duplex ||
         targetDoc?.print_config?.sides ||
-        order?.config_sides ||
-        'Single Side';
+        targetDoc?.print_config?.duplex ||
+        order?.config_sides
+      );
 
       return {
         ...common,
@@ -224,23 +237,91 @@ export default function OrderPreviewPage() {
   const mainCanvasRefs = useRef<{ [pageKey: string]: HTMLCanvasElement | null }>({});
   const thumbnailCanvasRefs = useRef<{ [pageKey: string]: HTMLCanvasElement | null }>({});
   const containerRef = useRef<HTMLDivElement>(null);
-  const renderedCacheRef = useRef<Record<string, string>>({});
-  const renderedThumbnailsRef = useRef<Record<string, string>>({});
-  const inFlightRendersRef = useRef<Record<string, boolean>>({});
+  const renderedCacheRef = useRef<Record<string, { canvas: HTMLCanvasElement; signature: string }>>({});
+  const renderedThumbnailsRef = useRef<Record<string, { canvas: HTMLCanvasElement; signature: string }>>({});
+  const inFlightRendersRef = useRef<Record<string, HTMLCanvasElement>>({});
+  const inFlightThumbnailRendersRef = useRef<Record<string, HTMLCanvasElement>>({});
+  const orderLoadIdRef = useRef(0);
+
+  const getRenderSignature = (item: UnifiedPreviewPage) => {
+    const docSettings = getEffectiveSettingsForDoc(item.docId);
+    const isBw =
+      docSettings.colorMode === 'B&W'
+        ? true
+        : docSettings.colorMode === 'Color'
+        ? false
+        : item.isBw;
+    const orientationValue =
+      docSettings.orientation ||
+      item.detectedOrientation ||
+      item.pdfWrapper?.detectedOrientation ||
+      (item.layout === 'Landscape' ? 'Landscape' : 'Portrait');
+    const effOrientation = String(orientationValue).toLowerCase() === 'landscape' ? 'Landscape' : 'Portrait';
+    const effScaling = String(docSettings.scaling || 'fit');
+    const effPaper = String(docSettings.paperSize || item.docPaperSize || order?.config_page_size || 'A4');
+    const thumbnailSignature = `${item.key}_${isBw}_${rotation}_${effOrientation}_${effScaling}_${effPaper}_${item.pagesPerSheet}_${item.pageNums.join(',')}`;
+    const paperName = String(effPaper).toUpperCase();
+    const portraitPaperWidth = paperName.includes('A3')
+      ? 841.89
+      : paperName.includes('A5')
+      ? 419.53
+      : paperName.includes('LETTER') || paperName.includes('LEGAL')
+      ? 612
+      : paperName.includes('TABLOID')
+      ? 792
+      : 595.28;
+    const portraitPaperHeight = paperName.includes('A3')
+      ? 1190.55
+      : paperName.includes('A5')
+      ? 595.28
+      : paperName.includes('LETTER')
+      ? 792
+      : paperName.includes('LEGAL')
+      ? 1008
+      : paperName.includes('TABLOID')
+      ? 1224
+      : 841.89;
+    const paperWidth = effOrientation === 'Landscape' ? portraitPaperHeight : portraitPaperWidth;
+    const paperHeight = effOrientation === 'Landscape' ? portraitPaperWidth : portraitPaperHeight;
+
+    return {
+      signature: `${item.key}_${zoomScale}_${rotation}_${isBw}_${effOrientation}_${effScaling}_${effPaper}`,
+      thumbnailSignature,
+      thumbnailScale: 130 / paperWidth,
+      paperAspectRatio: paperWidth / paperHeight,
+      paperWidth,
+      paperHeight,
+    };
+  };
 
   // 1. Fetch Order and all linked documents in database sequence
   const loadOrderData = useCallback(async () => {
+    const loadId = ++orderLoadIdRef.current;
     if (!orderId || !user?.shop_id) {
       setErrorMsg('Missing order ID or shopkeeper session.');
       setLoading(false);
       return;
     }
 
+    clearDocumentCache();
+    setLoading(true);
+    setOrder(null);
+    setDocuments([]);
+    setDocWrappers({});
+    setSelectedConfigDocId(null);
+    setCurrentPageIndex(0);
+    mainCanvasRefs.current = {};
+    thumbnailCanvasRefs.current = {};
+    renderedCacheRef.current = {};
+    renderedThumbnailsRef.current = {};
+    inFlightRendersRef.current = {};
+    inFlightThumbnailRendersRef.current = {};
+
     try {
-      setLoading(true);
       setErrorMsg(null);
 
       const result = await shopkeeperApi.getOrderForPreview(orderId, user.shop_id);
+      if (loadId !== orderLoadIdRef.current) return;
 
       if (!result) {
         setErrorMsg('Access Denied: Order not found or not assigned to your printing shop.');
@@ -251,76 +332,82 @@ export default function OrderPreviewPage() {
       setOrder(result.order);
       setDocuments(result.documents);
 
-      try {
-        const configuredPrinters: ShopPrinter[] = await shopkeeperApi.getShopPrinters(user.shop_id);
-        setAvailablePrinters(configuredPrinters);
-        if (configuredPrinters.length > 0) {
-          setMatchedShopPrinter(configuredPrinters[0]);
-        }
-      } catch (prnErr) {
-        console.warn('Printer fetch warning:', prnErr);
-      }
+      void shopkeeperApi
+        .getShopPrinters(user.shop_id)
+        .then((configuredPrinters: ShopPrinter[]) => {
+          if (loadId !== orderLoadIdRef.current) return;
+          setAvailablePrinters(configuredPrinters);
+          if (configuredPrinters.length > 0) {
+            setMatchedShopPrinter(configuredPrinters[0]);
+          }
+        })
+        .catch((prnErr) => {
+          console.warn('Printer fetch warning:', prnErr);
+        });
 
       const orderConfigOrientation = (result.order as any).config_orientation;
-      const isLand = (orderConfigOrientation || '').toLowerCase() === 'landscape';
+      const orientationValue = String(orderConfigOrientation || '');
+      const isLand = orientationValue.toLowerCase() === 'landscape';
       setDriverSettings({
         paperSize: result.order.config_page_size || 'A4',
-        orientation: isLand ? 'Landscape' : (orderConfigOrientation ? 'Portrait' : undefined),
+        orientation: isLand ? 'Landscape' : (orientationValue ? 'Portrait' : undefined),
         copies: result.order.config_copies || 1,
-        colorMode: result.order.config_print_type?.toLowerCase().includes('color') ? 'Color' : 'B&W',
-        duplex: result.order.config_sides?.toLowerCase().includes('back') ? 'Back-to-Back' : 'Single Side',
+        colorMode: String(result.order.config_print_type || '').toLowerCase().includes('color') ? 'Color' : 'B&W',
+        duplex: normalizePrintSides(result.order.config_sides),
         mediaType: result.order.config_paper_type || 'Standard 75 GSM',
         scaling: 'fit',
       });
 
-      // 1. Instantly load the first visible document wrapper so preview renders immediately
-      const loadedMap: { [docId: string]: PdfDocumentWrapper } = {};
+      // Show order details immediately; load the document streams after the preview shell is visible.
+      setLoading(false);
       const firstDoc = result.documents[0];
-      if (firstDoc?.file_url) {
-        try {
-          const firstWrapper = await loadDocument(firstDoc.file_url);
-          loadedMap[firstDoc.id] = firstWrapper;
-          setDocWrappers({ ...loadedMap });
-          setLoading(false); // Instantly ready to view first page!
-        } catch (err) {
-          console.warn(`Failed to parse wrapper for first doc ${firstDoc.file_name}:`, err);
-        }
-      } else {
-        setLoading(false);
+      const firstDocLoad = firstDoc?.file_url ? loadDocument(firstDoc.file_url) : Promise.resolve(null);
+
+      if (firstDoc) {
+        void firstDocLoad
+          .then((wrapper) => {
+            if (wrapper && loadId === orderLoadIdRef.current) {
+              setDocWrappers((current) => ({ ...current, [firstDoc.id]: wrapper }));
+            }
+          })
+          .catch((err) => {
+            console.warn(`Failed to parse wrapper for first doc ${firstDoc.file_name}:`, err);
+          });
       }
 
-      // 2. Background lazy load remaining document wrappers without blocking main thread
-      if (result.documents.length > 1) {
-        Promise.all(
-          result.documents.slice(1).map(async (doc) => {
-            if (doc.file_url) {
+      // Give the first document priority so other files don't compete for bandwidth.
+      void firstDocLoad
+        .catch(() => null)
+        .then(async () => {
+          const remainingWrappers = await Promise.all(
+            result.documents.slice(1).map(async (doc) => {
+              if (!doc.file_url) return null;
               try {
-                const wrapper = await loadDocument(doc.file_url);
-                return { id: doc.id, wrapper };
+                return { id: doc.id, wrapper: await loadDocument(doc.file_url) };
               } catch (err) {
                 console.warn(`Failed to parse wrapper for doc ${doc.file_name}:`, err);
+                return null;
               }
-            }
-            return null;
-          })
-        ).then((res) => {
-          let updated = false;
-          res.forEach((r) => {
-            if (r) {
-              loadedMap[r.id] = r.wrapper;
-              updated = true;
-            }
-          });
-          if (updated) {
-            setDocWrappers({ ...loadedMap });
+            })
+          );
+          const loadedWrappers = remainingWrappers.filter(
+            (loaded): loaded is { id: string; wrapper: PdfDocumentWrapper } => loaded !== null
+          );
+          if (loadedWrappers.length > 0 && loadId === orderLoadIdRef.current) {
+            setDocWrappers((current) => ({
+              ...current,
+              ...Object.fromEntries(loadedWrappers.map(({ id, wrapper }) => [id, wrapper])),
+            }));
           }
         });
-      }
     } catch (err: any) {
+      if (loadId !== orderLoadIdRef.current) return;
       console.error('Failed to load order for preview:', err);
       setErrorMsg(err.message || 'Failed to retrieve order preview data.');
     } finally {
-      setLoading(false);
+      if (loadId === orderLoadIdRef.current) {
+        setLoading(false);
+      }
     }
   }, [orderId, user?.shop_id]);
 
@@ -406,7 +493,7 @@ export default function OrderPreviewPage() {
               fromPage: fromP,
               toPage: toP,
               printType: cfg.printType || 'Black & White',
-              sides: cfg.sides || 'Single Side',
+              sides: normalizePrintSides(cfg.sides || cfg.duplex || order?.config_sides),
               pageSize: cfg.pageSize || 'A4',
             });
           } else {
@@ -415,7 +502,7 @@ export default function OrderPreviewPage() {
               fromPage: p,
               toPage: p,
               printType: cfg.printType || 'Black & White',
-              sides: cfg.sides || 'Single Side',
+              sides: normalizePrintSides(cfg.sides || cfg.duplex || order?.config_sides),
               pageSize: cfg.pageSize || 'A4',
             });
           }
@@ -441,7 +528,7 @@ export default function OrderPreviewPage() {
               qualifying.push({
                 pageNum: p,
                 printType: r.printType || cfg.printType || 'Black & White',
-                sides: r.sides || cfg.sides || 'Single Side',
+                sides: normalizePrintSides(r.sides || r.side || cfg.sides || cfg.duplex || order?.config_sides),
                 pageSize: r.pageSize || cfg.pageSize || 'A4',
                 paperType: cfg.paperType || 'Normal',
                 layout: cfg.layout || 'Portrait',
@@ -463,7 +550,7 @@ export default function OrderPreviewPage() {
           qualifying.push({
             pageNum: p,
             printType: cfg.printType || 'Black & White',
-            sides: cfg.sides || 'Single Side',
+            sides: normalizePrintSides(cfg.sides || cfg.duplex || order?.config_sides),
             pageSize: cfg.pageSize || 'A4',
             paperType: cfg.paperType || 'Normal',
             layout: cfg.layout || 'Portrait',
@@ -499,7 +586,7 @@ export default function OrderPreviewPage() {
         const isDocLandscape =
           wrapper?.detectedOrientation === 'Landscape' ||
           primaryPage.layout === 'Landscape' ||
-          (cfg.layout || '').toLowerCase() === 'landscape';
+          String(cfg.layout || '').toLowerCase() === 'landscape';
 
         const rangeLabel =
           pagesPerSheet !== '1-in-1'
@@ -551,7 +638,7 @@ export default function OrderPreviewPage() {
     if (displayedPages.length === 0) return;
 
     // Helper to render an item with signature-based caching
-    const renderItem = async (item: UnifiedPreviewPage) => {
+    const renderItem = async (item: UnifiedPreviewPage, renderMainPage = true) => {
       if (!item.pdfWrapper) return;
 
       const docSettings = getEffectiveSettingsForDoc(item.docId);
@@ -568,13 +655,49 @@ export default function OrderPreviewPage() {
         (item.layout === 'Landscape' ? 'Landscape' : 'Portrait');
       const effScaling = docSettings.scaling || 'fit';
       const effPaper = docSettings.paperSize || item.docPaperSize || order?.config_page_size || 'A4';
+      const { signature: renderSignature, thumbnailSignature, thumbnailScale } = getRenderSignature(item);
 
-      const renderSignature = `${item.key}_${zoomScale}_${rotation}_${isBw}_${effOrientation}_${effScaling}_${effPaper}`;
-      const thumbSignature = `${item.key}_${isBw}`;
+      const thumbCanvas = thumbnailCanvasRefs.current[item.key];
+      const cachedThumbnailRender = renderedThumbnailsRef.current[item.key];
+      if (
+        thumbCanvas &&
+        (cachedThumbnailRender?.canvas !== thumbCanvas || cachedThumbnailRender.signature !== thumbnailSignature) &&
+        inFlightThumbnailRendersRef.current[item.key] !== thumbCanvas
+      ) {
+        inFlightThumbnailRendersRef.current[item.key] = thumbCanvas;
+        try {
+          await renderPdfPage(item.pdfWrapper, item.pageNum, thumbCanvas, {
+            scale: thumbnailScale,
+            rotation,
+            isBlackAndWhite: isBw,
+            fitToPaper: effScaling !== 'actual',
+            scaling: effScaling as any,
+            equalMargins: true,
+            targetPaper: effPaper,
+            orientation: (effOrientation as 'Portrait' | 'Landscape') || undefined,
+            pagesPerSheet: item.pagesPerSheet,
+            pageNums: item.pageNums,
+          });
+          renderedThumbnailsRef.current[item.key] = { canvas: thumbCanvas, signature: thumbnailSignature };
+          setRenderRevision((revision) => revision + 1);
+        } catch (err) {
+          console.warn(`Thumb error on ${item.key}:`, err);
+        } finally {
+          if (inFlightThumbnailRendersRef.current[item.key] === thumbCanvas) {
+            delete inFlightThumbnailRendersRef.current[item.key];
+          }
+        }
+      }
 
       const mainCanvas = mainCanvasRefs.current[item.key];
-      if (mainCanvas && renderedCacheRef.current[item.key] !== renderSignature && !inFlightRendersRef.current[item.key]) {
-        inFlightRendersRef.current[item.key] = true;
+      const cachedMainRender = renderedCacheRef.current[item.key];
+      if (
+        renderMainPage &&
+        mainCanvas &&
+        (cachedMainRender?.canvas !== mainCanvas || cachedMainRender.signature !== renderSignature) &&
+        inFlightRendersRef.current[item.key] !== mainCanvas
+      ) {
+        inFlightRendersRef.current[item.key] = mainCanvas;
         try {
           await renderPdfPage(item.pdfWrapper, item.pageNum, mainCanvas, {
             scale: zoomScale,
@@ -588,33 +711,14 @@ export default function OrderPreviewPage() {
             pagesPerSheet: item.pagesPerSheet,
             pageNums: item.pageNums,
           });
-          renderedCacheRef.current[item.key] = renderSignature;
+          renderedCacheRef.current[item.key] = { canvas: mainCanvas, signature: renderSignature };
+          setRenderRevision((revision) => revision + 1);
         } catch (err) {
           console.warn(`Render error on ${item.key}:`, err);
         } finally {
-          inFlightRendersRef.current[item.key] = false;
-        }
-      }
-
-      const thumbCanvas = thumbnailCanvasRefs.current[item.key];
-      if (thumbCanvas && renderedThumbnailsRef.current[item.key] !== thumbSignature) {
-        try {
-          if (item.pagesPerSheet && item.pagesPerSheet !== '1-in-1') {
-            await renderPdfPage(item.pdfWrapper, item.pageNum, thumbCanvas, {
-              scale: 130 / (effPaper.includes('A3') ? 842 : 595),
-              rotation: 0,
-              isBlackAndWhite: isBw,
-              targetPaper: effPaper,
-              orientation: (effOrientation as 'Portrait' | 'Landscape') || undefined,
-              pagesPerSheet: item.pagesPerSheet,
-              pageNums: item.pageNums,
-            });
-          } else {
-            await renderThumbnail(item.pdfWrapper, item.pageNum, thumbCanvas, 130, isBw);
+          if (inFlightRendersRef.current[item.key] === mainCanvas) {
+            delete inFlightRendersRef.current[item.key];
           }
-          renderedThumbnailsRef.current[item.key] = thumbSignature;
-        } catch (err) {
-          console.warn(`Thumb error on ${item.key}:`, err);
         }
       }
     };
@@ -630,15 +734,22 @@ export default function OrderPreviewPage() {
     if (remainingItems.length > 0) {
       setTimeout(async () => {
         for (const item of remainingItems) {
-          await renderItem(item);
+          await renderItem(item, false);
         }
       }, 30);
     }
-  }, [displayedPages, currentPageIndex, zoomScale, rotation, getEffectiveSettingsForDoc, order?.config_page_size]);
+  }, [displayedPages, currentPageIndex, zoomScale, rotation, getEffectiveSettingsForDoc, order?.config_page_size, sidebarTab]);
 
   useEffect(() => {
     renderAllCanvases();
   }, [renderAllCanvases]);
+
+  useEffect(() => {
+    setCurrentPageIndex(0);
+    if (containerRef.current) {
+      containerRef.current.scrollTop = 0;
+    }
+  }, [selectedConfigDocId]);
 
   // Handle Zoom In / Out / Fit
   const handleZoomIn = () => {
@@ -669,30 +780,45 @@ export default function OrderPreviewPage() {
 
   // Scroll smoothly to a specific global page index
   const scrollToPage = (targetIndex: number) => {
-    if (targetIndex < 0 || targetIndex >= unifiedPages.length) return;
+    if (targetIndex < 0 || targetIndex >= displayedPages.length) return;
     setCurrentPageIndex(targetIndex);
-    const targetKey = unifiedPages[targetIndex]?.key;
+    const targetKey = displayedPages[targetIndex]?.key;
     const canvas = mainCanvasRefs.current[targetKey];
-    if (canvas) {
-      canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const container = containerRef.current;
+    if (canvas && container) {
+      const containerTop = container.getBoundingClientRect().top;
+      const canvasTop = canvas.getBoundingClientRect().top;
+      container.scrollTo({
+        top: container.scrollTop + canvasTop - containerTop - 24,
+        behavior: 'smooth',
+      });
     }
   };
 
   // Track active page on scroll
   const handleScroll = () => {
-    if (!containerRef.current || unifiedPages.length === 0) return;
+    if (!containerRef.current || displayedPages.length === 0) return;
     const containerTop = containerRef.current.getBoundingClientRect().top;
+    const activeAnchor = containerTop + 160;
+    let nearestPageIndex = -1;
+    let nearestDistance = Number.POSITIVE_INFINITY;
 
-    for (let i = 0; i < unifiedPages.length; i++) {
-      const item = unifiedPages[i];
+    for (let i = 0; i < displayedPages.length; i++) {
+      const item = displayedPages[i];
       const canvas = mainCanvasRefs.current[item.key];
       if (canvas) {
         const rect = canvas.getBoundingClientRect();
-        if (rect.top <= containerTop + 200 && rect.bottom >= containerTop + 50) {
-          setCurrentPageIndex(i);
-          break;
+        if (rect.bottom > activeAnchor) {
+          const distance = Math.abs(rect.top - activeAnchor);
+          if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearestPageIndex = i;
+          }
         }
       }
+    }
+    if (nearestPageIndex >= 0) {
+      setCurrentPageIndex((currentIndex) => (currentIndex === nearestPageIndex ? currentIndex : nearestPageIndex));
     }
   };
 
@@ -716,14 +842,22 @@ export default function OrderPreviewPage() {
   };
 
   // Physical Direct Print via QZ Tray: Follows exact database configurations for all documents & custom ranges
-  const handleDirectPrint = async () => {
+  const handleDirectPrint = async (selectedDocumentIds?: Set<string>) => {
     if (!order || documents.length === 0) return;
+    const selectedIds = selectedDocumentIds || new Set(documents.map((doc) => doc.id));
+    if (selectedIds.size === 0) {
+      toast.error('Select at least one document to print.');
+      return;
+    }
     setPrinting(true);
+    printQueue.begin(`#${order.token_number || order.id}`, unifiedPages.length);
     const toastId = toast.loading(`Spooling hardware print jobs for Order #${order.token_number || order.id}...`);
 
     try {
+      printQueue.setMessage('Finding a compatible printer...');
       // 1. Retrieve configured physical/allowed virtual printers
-      const configuredPrinters: ShopPrinter[] = await shopkeeperApi.getShopPrinters(order.shop_id);
+      const configuredPrinters: ShopPrinter[] =
+        realPrinters.length > 0 ? realPrinters : await shopkeeperApi.getShopPrinters(order.shop_id);
       const onlinePrinters = configuredPrinters.filter(
         (p) => p.is_online !== false && (isPhysicalPrinter(p.name) || isAllowedVirtualPrinter(p.name))
       );
@@ -746,6 +880,7 @@ export default function OrderPreviewPage() {
         paperType: any;
         copies: number;
         pageCount: number;
+        pageNumbers: number[];
         matchedPrinter: ShopPrinter;
         layout?: string;
         pagesPerSheet?: number;
@@ -763,7 +898,24 @@ export default function OrderPreviewPage() {
       const alreadyPrinted: PrintedSegment[] = Array.isArray(order.printed_segments) ? order.printed_segments : [];
       const printedKeys = new Set(alreadyPrinted.map((s) => `${s.doc_id || s.doc_name}_${s.page_range || 'all'}`));
 
-      for (const doc of documents) {
+      documents
+        .filter((doc) => !selectedIds.has(doc.id))
+        .forEach((doc) => {
+          const totalPages = Math.max(1, Number(doc.total_pages) || Number(order.total_pages) || 1);
+          const pendingPages = Array.from({ length: totalPages }, (_, index) => index + 1).filter(
+            (pageNum) => !isPageCoveredByPrinted(doc.id, doc.file_name, pageNum, alreadyPrinted)
+          );
+          if (pendingPages.length > 0) {
+            pendingSegments.push({
+              docName: doc.file_name || 'Untitled document',
+              pageRange: pendingPages.join(','),
+              reason: 'Not selected for printing',
+              pagesCount: pendingPages.length,
+            });
+          }
+        });
+
+      for (const doc of documents.filter((document) => selectedIds.has(document.id))) {
         const cfg = doc.print_config || {};
         const sourceDocUrl = doc.file_url || order.file_url || '';
 
@@ -790,7 +942,7 @@ export default function OrderPreviewPage() {
                 fromPage: fromP,
                 toPage: toP,
                 printType: cfg.printType || 'Black & White',
-                sides: cfg.sides || 'Single Side',
+                sides: normalizePrintSides(cfg.sides || cfg.duplex || order?.config_sides),
                 pageSize: cfg.pageSize || 'A4',
               });
             } else {
@@ -799,7 +951,7 @@ export default function OrderPreviewPage() {
                 fromPage: p,
                 toPage: p,
                 printType: cfg.printType || 'Black & White',
-                sides: cfg.sides || 'Single Side',
+                sides: normalizePrintSides(cfg.sides || cfg.duplex || order?.config_sides),
                 pageSize: cfg.pageSize || 'A4',
               });
             }
@@ -829,13 +981,14 @@ export default function OrderPreviewPage() {
                 pageSize: r.pageSize || cfg.pageSize || 'A4',
                 printType: r.printType,
                 color_mode: r.printType,
-                sides: r.sides || 'Single Side',
+                sides: normalizePrintSides(r.sides || r.side || cfg.sides || cfg.duplex || order?.config_sides),
                 copies: Number(cfg.copies) || 1,
               };
 
               const matchResult = shopkeeperApi.findCompatiblePrinterForOrder(order, onlinePrinters, rangeConfig);
               const isColor = (r.printType || '').toLowerCase().includes('color');
-              const isDuplex = (r.sides || '').toLowerCase().includes('back') || (r.sides || '').toLowerCase().includes('double');
+              const rangeSides = normalizePrintSides(r.sides || r.side || cfg.sides || cfg.duplex || order.config_sides);
+              const isDuplex = isDuplexPrint(rangeSides);
               const pageRangeStr = `${subR.fromPage}-${subR.toPage}`;
 
               if (!matchResult.compatiblePrinter) {
@@ -852,11 +1005,15 @@ export default function OrderPreviewPage() {
                   docUrl: sourceDocUrl,
                   pageRange: pageRangeStr,
                   colorMode: isColor ? 'Color' : 'B&W',
-                  duplex: isDuplex ? 'Back-to-Back' : 'Single Side',
+                  duplex: rangeSides,
                   pageSize: rangeConfig.pageSize,
                   paperType: cfg.paperType || 'Standard 75 GSM',
                   copies: Number(cfg.copies) || 1,
                   pageCount: Math.max(1, subR.toPage - subR.fromPage + 1),
+                  pageNumbers: Array.from(
+                    { length: Math.max(1, subR.toPage - subR.fromPage + 1) },
+                    (_, index) => subR.fromPage + index
+                  ),
                   matchedPrinter: matchResult.compatiblePrinter,
                   layout: cfg.layout || docWrappers[doc.id]?.detectedOrientation || 'Portrait',
                   pagesPerSheet: cfg.pagesPerSheet || cfg.pages_per_sheet || '1-in-1',
@@ -877,9 +1034,13 @@ export default function OrderPreviewPage() {
             continue; // All pages already printed - zero reprint guarantee
           }
 
-          const matchResult = shopkeeperApi.findCompatiblePrinterForOrder(order, onlinePrinters, cfg);
+          const effectiveSides = normalizePrintSides(cfg.sides || cfg.duplex || order.config_sides);
+          const matchResult = shopkeeperApi.findCompatiblePrinterForOrder(order, onlinePrinters, {
+            ...cfg,
+            sides: effectiveSides,
+          });
           const isColor = (cfg.printType || '').toLowerCase().includes('color');
-          const isDuplex = (cfg.sides || '').toLowerCase().includes('back') || (cfg.sides || '').toLowerCase().includes('double');
+          const isDuplex = isDuplexPrint(effectiveSides);
 
           for (const subR of unprintedSubRanges) {
             const isFullDoc = subR.fromPage === 1 && subR.toPage === docTotal;
@@ -914,11 +1075,15 @@ export default function OrderPreviewPage() {
                 docUrl: sourceDocUrl,
                 pageRange: pageRangeStr,
                 colorMode: isColor ? 'Color' : 'B&W',
-                duplex: isDuplex ? 'Back-to-Back' : 'Single Side',
+                duplex: effectiveSides,
                 pageSize: cfg.pageSize || 'A4',
                 paperType: cfg.paperType || 'Standard 75 GSM',
                 copies: Number(cfg.copies) || 1,
                 pageCount: Math.max(1, subR.toPage - subR.fromPage + 1),
+                pageNumbers: Array.from(
+                  { length: Math.max(1, subR.toPage - subR.fromPage + 1) },
+                  (_, index) => subR.fromPage + index
+                ),
                 matchedPrinter: chosenPrinter,
                 layout: cfg.layout || docWrappers[doc.id]?.detectedOrientation || 'Portrait',
                 pagesPerSheet: cfg.pagesPerSheet || cfg.pages_per_sheet || '1-in-1',
@@ -930,10 +1095,9 @@ export default function OrderPreviewPage() {
 
       if (jobPlans.length === 0) {
         await shopkeeperApi.updateOrderStatus(order.id, 'No Compatible Printer');
-        const reasons = pendingSegments.map((p) => `${p.docName}: ${p.reason}`).join('; ');
-        toast.error('No compatible printer found for remaining segments', {
+        toast.error('No compatible printer found.', {
           id: toastId,
-          description: reasons || 'Please connect an appropriate printer or check paper size & color mode.',
+          description: 'Check printer paper, color, and duplex settings.',
         });
         setPrinting(false);
         return;
@@ -943,6 +1107,9 @@ export default function OrderPreviewPage() {
       await shopkeeperApi.updateOrderStatus(order.id, 'Printing');
 
       const newlyPrinted: PrintedSegment[] = [];
+      const totalPagesToPrint = jobPlans.reduce((total, plan) => total + plan.pageCount, 0);
+      printQueue.setTotalPages(totalPagesToPrint);
+      printQueue.setMessage('Preparing the first print sheet...');
 
       for (let i = 0; i < jobPlans.length; i++) {
         const plan = jobPlans[i];
@@ -983,128 +1150,134 @@ export default function OrderPreviewPage() {
         const targetPaperSize = docSettings.paperSize || plan.pageSize;
         const targetMediaType = docSettings.mediaType || plan.paperType;
         const targetCopies = docSettings.copies || plan.copies;
-        const targetDuplex = docSettings.duplex ? (docSettings.duplex === 'Back-to-Back' ? 'Back-to-Back' : 'Single Side') : plan.duplex;
-
-        // Pre-render 300 DPI high-resolution sheets for 100% preview matching
-        // (Horizontally centered, proportional Fit to Page, equal 2.5 mm margins, no driver double-rotation or bottom drift)
-        let generatedPageImages: string[] | undefined = undefined;
-
-        if (docWrapper) {
-          const isImageFile = docWrapper.isImage || /\.(jpe?g|png|webp|bmp|gif)($|\?)/i.test(plan.docUrl);
-          const totalDocPages = docWrapper.numPages || 1;
-
-          // Helper to resolve sub-range page numbers
-          const resolvePageNumbers = (rangeStr?: string, maxPages = 1): number[] => {
-            if (!rangeStr || rangeStr.toLowerCase() === 'all pages' || rangeStr.toLowerCase() === 'all') {
-              return Array.from({ length: maxPages }, (_, i) => i + 1);
-            }
-            const clean = rangeStr.trim();
-            if (clean.includes('-')) {
-              const [startStr, endStr] = clean.split('-');
-              const s = Math.max(1, parseInt(startStr?.trim() || '1', 10));
-              const e = Math.min(maxPages, parseInt(endStr?.trim() || String(maxPages), 10));
-              if (s <= e) {
-                const resList: number[] = [];
-                for (let i = s; i <= e; i++) resList.push(i);
-                return resList;
-              }
-            }
-            const single = parseInt(clean, 10);
-            if (!isNaN(single) && single >= 1 && single <= maxPages) {
-              return [single];
-            }
-            return [1];
-          };
-
-          const targetPageNums = isImageFile ? [1] : resolvePageNumbers(plan.pageRange, totalDocPages);
-
-          // For images or documents up to 20 pages, pre-render 300 DPI print-ready sheets
-          if (isImageFile || targetPageNums.length <= 20) {
-            try {
-              const renderedSheets: string[] = [];
-              const rawDocPps = String(plan.pagesPerSheet || (docSettings as any)?.pagesPerSheet || '1-in-1').toLowerCase();
-              const docPps: '1-in-1' | '2-in-1' | '4-in-1' =
-                rawDocPps.includes('4') ? '4-in-1' : rawDocPps.includes('2') ? '2-in-1' : '1-in-1';
-              const nUpCount = docPps === '4-in-1' ? 4 : docPps === '2-in-1' ? 2 : 1;
-
-              const chunks: number[][] = [];
-              for (let cIdx = 0; cIdx < targetPageNums.length; cIdx += nUpCount) {
-                chunks.push(targetPageNums.slice(cIdx, cIdx + nUpCount));
-              }
-
-              for (const chunk of chunks) {
-                const sheetDataUrl = await renderDocumentToPrintDataUrl(docWrapper, chunk[0], {
-                  targetPaper: targetPaperSize,
-                  orientation: targetOrientation,
-                  scaling: targetScaling as any,
-                  isBlackAndWhite: targetColorMode === 'B&W',
-                  equalMargins: true,
-                  fitToPaper: targetScaling !== 'actual',
-                  pagesPerSheet: docPps,
-                  pageNums: chunk,
-                }, docSettings.dpi || 300);
-                renderedSheets.push(sheetDataUrl);
-              }
-              if (renderedSheets.length > 0) {
-                generatedPageImages = renderedSheets;
-              }
-            } catch (renderErr) {
-              console.warn('Pre-rendering print sheets failed, falling back to direct URL dispatch:', renderErr);
-            }
-          }
+        const targetDuplex =
+          isDuplexPrint(docSettings.duplex) || isDuplexPrint(plan.duplex)
+            ? 'Back-to-Back'
+            : 'Single Side';
+        const targetPageNums = plan.pageNumbers;
+        const rawDocPps = String(plan.pagesPerSheet || (docSettings as any)?.pagesPerSheet || '1-in-1').toLowerCase();
+        const docPps: '1-in-1' | '2-in-1' | '4-in-1' =
+          rawDocPps.includes('4') ? '4-in-1' : rawDocPps.includes('2') ? '2-in-1' : '1-in-1';
+        const pagesPerSheet = docPps === '4-in-1' ? 4 : docPps === '2-in-1' ? 2 : 1;
+        const pagesPerJob = pagesPerSheet * (targetDuplex === 'Back-to-Back' ? 2 : 1);
+        const pageChunks: number[][] = [];
+        for (let pageIndex = 0; pageIndex < targetPageNums.length; pageIndex += pagesPerJob) {
+          pageChunks.push(targetPageNums.slice(pageIndex, pageIndex + pagesPerJob));
         }
 
-        const res = await localPrintAgent.dispatchPrintJob({
-          orderId: order.id,
-          shopId: order.shop_id,
-          pcId: plan.matchedPrinter.pc_id || order.target_pc_id || 'pc_01',
-          printerId: plan.matchedPrinter.id,
-          printerName: plan.matchedPrinter.name,
-          fileName: plan.docName,
-          fileUrl: plan.docUrl,
-          pageImages: generatedPageImages,
-          copies: targetCopies,
-          colorMode: targetColorMode,
-          duplex: targetDuplex,
-          paperSize: targetPaperSize,
-          paperType: targetMediaType,
-          pageCount: plan.pageCount,
-          pageRange: plan.pageRange,
-          totalPrice: Number(order.grand_total) || 0,
-          orientation: targetOrientation,
-          mediaSource: docSettings.mediaSource,
-          tray: docSettings.mediaSource,
-          mediaType: targetMediaType,
-          scaling: targetScaling,
-          dpi: docSettings.dpi || 300,
-          driverProperties: {
-            ...docSettings,
-            density: docSettings.dpi || 300,
-            dpi: docSettings.dpi || 300,
-          },
-        });
+        let nextChunkIndex = 0;
+        for (let chunkIndex = 0; chunkIndex < pageChunks.length; chunkIndex++) {
+          if (!(await printQueue.waitUntilReady())) break;
+          const pageNums = pageChunks[chunkIndex];
+          const pageImages: string[] = [];
+          if (docWrapper && docPps !== '1-in-1') {
+            for (let pageIndex = 0; pageIndex < pageNums.length; pageIndex += pagesPerSheet) {
+              const sheetPages = pageNums.slice(pageIndex, pageIndex + pagesPerSheet);
+              pageImages.push(
+                await renderDocumentToPrintDataUrl(
+                  docWrapper,
+                  sheetPages[0],
+                  {
+                    targetPaper: targetPaperSize,
+                    orientation: targetOrientation,
+                    scaling: targetScaling as any,
+                    isBlackAndWhite: targetColorMode === 'B&W',
+                    equalMargins: true,
+                    fitToPaper: targetScaling !== 'actual',
+                    pagesPerSheet: docPps,
+                    pageNums: sheetPages,
+                  },
+                  docSettings.dpi || 300
+                )
+              );
+            }
+          }
 
-        if (!res.success) {
-          pendingSegments.push({
-            docName: plan.docName,
-            pageRange: plan.pageRange,
-            reason: res.message || 'Printer physical dispatch error',
-            pagesCount: plan.pageCount,
+          if (!(await printQueue.waitUntilReady())) break;
+          printQueue.update(
+            plan.docName,
+            pageNums[0],
+            `Sending page ${pageNums[0]} to ${plan.matchedPrinter.name}...`
+          );
+          const res = await localPrintAgent.dispatchPrintJob({
+            orderId: order.id,
+            shopId: order.shop_id,
+            pcId: plan.matchedPrinter.pc_id || order.target_pc_id || 'pc_01',
+            printerId: plan.matchedPrinter.id,
+            printerName: plan.matchedPrinter.name,
+            fileName: plan.docName,
+            fileUrl: plan.docUrl,
+            pageImages: pageImages.length > 0 ? pageImages : undefined,
+            copies: targetCopies,
+            colorMode: targetColorMode,
+            duplex: targetDuplex,
+            paperSize: targetPaperSize,
+            paperType: targetMediaType,
+            pageCount: pageNums.length,
+            pageRange: pageImages.length > 0 ? undefined : pageNums.join(','),
+            totalPrice: Number(order.grand_total) || 0,
+            orientation: targetOrientation,
+            mediaSource: docSettings.mediaSource,
+            tray: docSettings.mediaSource,
+            mediaType: targetMediaType,
+            scaling: targetScaling,
+            dpi: docSettings.dpi || 300,
+            driverProperties: {
+              ...docSettings,
+              duplex: targetDuplex,
+              density: docSettings.dpi || 300,
+              dpi: docSettings.dpi || 300,
+            },
           });
-        } else {
-          newlyPrinted.push({
-            id: `seg-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
-            doc_id: plan.docId,
-            doc_name: plan.docName,
-            page_range: plan.pageRange || 'All Pages',
-            pages_count: plan.pageCount || 1,
-            printer_name: plan.matchedPrinter.name,
-            printed_at: new Date().toISOString(),
-            status: 'printed',
-            color_mode: plan.colorMode,
-            duplex: plan.duplex,
-            copies: plan.copies,
-          });
+
+          if (!res.success) {
+            pendingSegments.push({
+              docName: plan.docName,
+              pageRange: pageNums.join(','),
+              reason: res.message || 'Printer physical dispatch error',
+              pagesCount: pageNums.length,
+            });
+          } else {
+            const printedAt = new Date().toISOString();
+            pageNums.forEach((pageNum) => {
+              newlyPrinted.push({
+                id: `seg-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+                doc_id: plan.docId,
+                doc_name: plan.docName,
+                page_range: String(pageNum),
+                pages_count: 1,
+                printer_name: plan.matchedPrinter.name,
+                printed_at: printedAt,
+                status: 'printed',
+                color_mode: plan.colorMode,
+                duplex: plan.duplex,
+                copies: plan.copies,
+              });
+            });
+            printQueue.completePages(pageNums.length);
+          }
+          nextChunkIndex = chunkIndex + 1;
+        }
+
+        if (nextChunkIndex < pageChunks.length) {
+          const remainingPages = pageChunks.slice(nextChunkIndex).flat();
+          if (remainingPages.length > 0) {
+            pendingSegments.push({
+              docName: plan.docName,
+              pageRange: remainingPages.join(','),
+              reason: 'Print cancelled by user',
+              pagesCount: remainingPages.length,
+            });
+          }
+          for (const unstartedPlan of jobPlans.slice(i + 1)) {
+            pendingSegments.push({
+              docName: unstartedPlan.docName,
+              pageRange: unstartedPlan.pageRange || 'All Pages',
+              reason: 'Print cancelled by user',
+              pagesCount: unstartedPlan.pageCount,
+            });
+          }
+          break;
         }
       }
 
@@ -1153,7 +1326,29 @@ export default function OrderPreviewPage() {
       toast.error(err.message || 'Hardware print failed.', { id: toastId });
     } finally {
       setPrinting(false);
+      printQueue.finish();
     }
+  };
+
+  const requestDirectPrint = () => {
+    if (documents.length > 1) {
+      setSelectedPrintDocumentIds(new Set(documents.map((doc) => doc.id)));
+      setPrintSelectionOpen(true);
+      return;
+    }
+    void handleDirectPrint();
+  };
+
+  const handlePrintSelection = (printAll: boolean) => {
+    const documentIds = printAll
+      ? new Set(documents.map((doc) => doc.id))
+      : new Set(selectedPrintDocumentIds);
+    if (documentIds.size === 0) {
+      toast.error('Select at least one document to print.');
+      return;
+    }
+    setPrintSelectionOpen(false);
+    void handleDirectPrint(documentIds);
   };
 
   if (loading) {
@@ -1191,10 +1386,36 @@ export default function OrderPreviewPage() {
     );
   }
 
-  const activePageItem = unifiedPages[currentPageIndex];
+  const activePageItem = displayedPages[currentPageIndex];
 
   return (
     <div className="flex flex-col h-[calc(100vh-4rem)] bg-[#1e1e1e] text-neutral-200 overflow-hidden select-none font-sans">
+      <PrintProgressControls
+        progress={printQueue.progress}
+        onPause={printQueue.pause}
+        onResume={printQueue.resume}
+        onCancel={printQueue.cancel}
+      />
+      <PrintDocumentSelectionDialog
+        open={printSelectionOpen}
+        documents={documents.map((doc) => ({
+          id: doc.id,
+          name: doc.file_name || 'Untitled document',
+          totalPages: Math.max(1, Number(doc.total_pages) || 1),
+        }))}
+        selectedDocumentIds={selectedPrintDocumentIds}
+        onOpenChange={setPrintSelectionOpen}
+        onSelectionChange={(documentId, selected) => {
+          setSelectedPrintDocumentIds((current) => {
+            const next = new Set(current);
+            if (selected) next.add(documentId);
+            else next.delete(documentId);
+            return next;
+          });
+        }}
+        onPrintAll={() => handlePrintSelection(true)}
+        onPrintSelected={() => handlePrintSelection(false)}
+      />
       {/* ================= TOP TOOLBAR (Single preview header for all documents) ================= */}
       <header className="h-12 bg-[#202124] border-b border-neutral-800 flex items-center justify-between px-3 shrink-0 z-20 text-neutral-300 text-xs shadow-md">
         {/* Left: Sidebar Toggle, Back Button, Order Identifier */}
@@ -1336,7 +1557,7 @@ export default function OrderPreviewPage() {
           <Button
             size="sm"
             disabled={printing || unifiedPages.length === 0}
-            onClick={handleDirectPrint}
+            onClick={requestDirectPrint}
             className="h-8 px-3 text-xs font-heading font-bold bg-primary hover:bg-primary/90 text-primary-foreground rounded gap-1.5 shadow-sm active:scale-95 transition-transform"
             title="Dispatch all documents strictly following database configurations via QZ Tray"
           >
@@ -1361,7 +1582,7 @@ export default function OrderPreviewPage() {
                 }`}
               >
                 <Layers className="w-3.5 h-3.5 text-primary" />
-                <span>Pages ({unifiedPages.length})</span>
+                <span>Pages ({displayedPages.length})</span>
               </button>
               <button
                 onClick={() => setSidebarTab('details')}
@@ -1379,8 +1600,17 @@ export default function OrderPreviewPage() {
             {/* Sidebar Content */}
             {sidebarTab === 'thumbnails' ? (
               <div className="flex-1 overflow-y-auto p-3 space-y-4">
-                {unifiedPages.map((item, index) => {
+                {displayedPages.map((item, index) => {
                   const isActive = index === currentPageIndex;
+                  const thumbnailCache = renderedThumbnailsRef.current[item.key];
+                  const expectedThumbnailSignature = getRenderSignature(item).thumbnailSignature;
+                  const isThumbnailRendered =
+                    Boolean(
+                      thumbnailCache &&
+                        thumbnailCanvasRefs.current[item.key] &&
+                        thumbnailCache.canvas === thumbnailCanvasRefs.current[item.key] &&
+                        thumbnailCache.signature === expectedThumbnailSignature
+                    );
                   return (
                     <div
                       key={item.key}
@@ -1395,18 +1625,23 @@ export default function OrderPreviewPage() {
                         </div>
                       )}
                       <div
-                        className={`bg-white rounded overflow-hidden shadow-md transition-all p-0.5 ${
+                        className={`relative w-[130px] bg-white rounded overflow-hidden shadow-md transition-all p-0.5 ${
                           isActive
                             ? 'ring-2 ring-primary ring-offset-2 ring-offset-[#202124]'
                             : 'border border-neutral-700/60 group-hover:border-neutral-500'
                         }`}
+                        style={{ aspectRatio: `${getRenderSignature(item).paperAspectRatio}` }}
                       >
+                        {(!item.pdfWrapper || !isThumbnailRendered) && (
+                          <div className="absolute inset-0 z-10 bg-neutral-200" />
+                        )}
                         <canvas
                           ref={(el) => {
                             thumbnailCanvasRefs.current[item.key] = el;
                           }}
                           className="block max-w-full h-auto bg-white"
                           style={{
+                            opacity: isThumbnailRendered ? 1 : 0,
                             filter: item.isBw ? 'grayscale(100%) contrast(105%)' : 'none',
                           }}
                         />
@@ -1609,8 +1844,21 @@ export default function OrderPreviewPage() {
               </Button>
             </div>
           ) : (
-            displayedPages.map((item) => (
-            <div key={item.key} className="relative flex flex-col items-center group w-full max-w-3xl">
+            displayedPages.map((item) => {
+              const cachedRender = renderedCacheRef.current[item.key];
+              const mainCanvas = mainCanvasRefs.current[item.key];
+              const { signature: expectedRenderSignature, paperAspectRatio, paperWidth } = getRenderSignature(item);
+              const isRendered =
+                Boolean(item.pdfWrapper) &&
+                Boolean(
+                  cachedRender &&
+                    mainCanvas &&
+                    cachedRender.canvas === mainCanvas &&
+                    cachedRender.signature === expectedRenderSignature
+                );
+
+              return (
+              <div key={item.key} className="relative flex flex-col items-center group w-full max-w-3xl">
               {/* Document Header Separator (Appears on the first page of each document) */}
               {item.isFirstPageOfDoc && (
                 <div className="w-full flex items-center justify-between px-3.5 py-2.5 bg-neutral-900/90 border border-neutral-700/80 rounded-md text-xs font-mono text-neutral-300 shadow mb-4 mt-6 first:mt-0">
@@ -1641,6 +1889,13 @@ export default function OrderPreviewPage() {
               <div
                 className="bg-white rounded-sm shadow-[0_10px_35px_rgba(0,0,0,0.6)] border border-neutral-400/20 overflow-hidden transition-all duration-150"
                 style={{
+                  ...(isRendered
+                    ? {}
+                    : {
+                        width: `min(100%, ${paperWidth * zoomScale}px)`,
+                        aspectRatio: `${paperAspectRatio}`,
+                        position: 'relative' as const,
+                      }),
                   filter: item.isBw ? 'grayscale(100%) contrast(105%)' : 'none',
                 }}
               >
@@ -1649,14 +1904,20 @@ export default function OrderPreviewPage() {
                     mainCanvasRefs.current[item.key] = el;
                   }}
                   className="block bg-white max-w-full h-auto object-contain"
+                  style={{ opacity: isRendered ? 1 : 0 }}
                 />
+                {!isRendered && (
+                  <div className="absolute inset-0 bg-neutral-200" />
+                )}
               </div>
               {/* Page Number & Document Footer Under Sheet */}
               <div className="mt-2 text-center text-xs font-mono text-neutral-400">
                 Doc #{item.docIndex + 1} • Page {item.pageNum} of {item.docTotalPages} ({item.docFileName})
               </div>
-            </div>
-          )))}
+              </div>
+              );
+            })
+          )}
         </main>
 
         {/* ================= SUMMARY DRAWER (When Order Info is clicked) ================= */}
@@ -1714,7 +1975,7 @@ export default function OrderPreviewPage() {
             <div className="mt-auto pt-4 border-t border-neutral-800">
               <Button
                 disabled={printing || unifiedPages.length === 0}
-                onClick={handleDirectPrint}
+                onClick={requestDirectPrint}
                 className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-heading font-bold"
               >
                 <Printer className="w-4 h-4 mr-2" />
@@ -1928,14 +2189,9 @@ export default function OrderPreviewPage() {
               [targetPropertyDocId]: newProps,
             }));
           }
-          // Reset render caches to force re-render with new printer driver properties
-          renderedCacheRef.current = {};
-          renderedThumbnailsRef.current = {};
           toast.success(
             `Properties applied (${targetPropertyDocId === 'all' ? 'All Documents' : 'Selected Document'}): ${newProps.paperSize || 'Current Paper'}, ${newProps.orientation || 'Original Orientation'}, Scaling: ${newProps.scaling || 'fit'}.`
           );
-          // Trigger canvas re-rendering
-          renderAllCanvases();
         }}
       />
     </div>

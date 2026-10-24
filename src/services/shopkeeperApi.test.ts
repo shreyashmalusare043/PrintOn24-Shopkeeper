@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ShopPrinter } from '@/types/shopkeeper';
 import { shopkeeperApi } from './shopkeeperApi';
+import { isDuplexPrint, normalizePrintSides } from '@/utils/printSides';
 
 const monochromePrinter: ShopPrinter = {
   id: 'printer-1',
@@ -48,5 +49,54 @@ describe('shopkeeperApi.matchPrinterToPrintConfig', () => {
     expect(result.reasons).toContain(
       'Requires Bond Paper paper type, which is unsupported by printer.'
     );
+  });
+
+  it('does not treat a single-side printer as compatible with a duplex document', () => {
+    const result = shopkeeperApi.matchPrinterToPrintConfig(monochromePrinter, {
+      pageSize: 'A4',
+      paperType: 'Standard',
+      printType: 'Black & White',
+      sides: normalizePrintSides('Duplex'),
+    });
+
+    expect(result.isCompatible).toBe(false);
+    expect(result.reasons).toContain(
+      'Requires Back-to-Back (Duplex) printing, but printer only supports Single Side.'
+    );
+  });
+
+  it('rejects a printer whose duplex capability is explicitly disabled even if its legacy flag is true', () => {
+    const conflictingPrinter = {
+      ...monochromePrinter,
+      is_duplex: true,
+      capabilities: {
+        ...monochromePrinter.capabilities,
+        double_side: false,
+      },
+    };
+
+    const result = shopkeeperApi.matchPrinterToPrintConfig(conflictingPrinter, {
+      pageSize: 'A4',
+      paperType: 'Standard',
+      printType: 'Black & White',
+      sides: 'Back-to-Back',
+    });
+
+    expect(result.isCompatible).toBe(false);
+  });
+});
+
+describe('print side normalization', () => {
+  it.each(['Back-to-Back', 'Duplex', 'double-sided', 'Tumble', true])(
+    'recognizes %s as duplex',
+    (sides) => {
+      expect(isDuplexPrint(sides)).toBe(true);
+      expect(normalizePrintSides(sides)).toBe('Back-to-Back');
+    }
+  );
+
+  it('keeps explicit single-side configurations simplex', () => {
+    expect(isDuplexPrint('Single Side')).toBe(false);
+    expect(normalizePrintSides('Single Side')).toBe('Single Side');
   });
 });

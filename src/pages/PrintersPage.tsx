@@ -412,7 +412,15 @@ export const PrintersPage: React.FC = () => {
 
     toast.info(`Sending test page directly to [${printer.name}]...`);
     try {
-      const res = await qzTrayService.testPrint(printer.name);
+      const isBwOnly =
+        printer.usage_type === 'B&W Only' ||
+        (printer.capabilities?.bw === true && printer.capabilities?.color !== true) ||
+        (printer.is_color !== true && printer.capabilities?.color !== true);
+      const res = await qzTrayService.testPrint(printer.name, {
+        colorMode: isBwOnly ? 'B&W' : 'Color',
+        duplex: printer.is_duplex === true || printer.capabilities?.double_side === true,
+        paperSize: printer.paper_sizes?.[0] || 'A4',
+      });
       if (res.success) {
         toast.success(`Test page printed successfully on ${printer.name}`);
       } else {

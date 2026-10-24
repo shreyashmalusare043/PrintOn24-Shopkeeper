@@ -28,6 +28,7 @@ import type {
 import { localPrintAgent, type PrintJobPayload } from './localPrintAgent';
 import { isAllowedVirtualPrinter, isPhysicalPrinter } from './qzTrayService';
 import { supabase } from './supabase';
+import { isDuplexPrint, normalizePrintSides } from '@/utils/printSides';
 
 const AUTH_KEY = 'copygo_shopkeeper_session';
 
@@ -2198,51 +2199,44 @@ export const shopkeeperApi = {
         return null;
       }
 
-      // 2. Fetch customer name from user_profiles if needed
+      // 2. Fetch customer name and documents in parallel; neither depends on the other.
       let customerName = order.customer_name || order.user_name || 'Customer';
-      if (order.user_id) {
-        const { data: profile } = await supabase
-          .from('user_profiles')
-          .select('name, surname')
-          .eq('id', order.user_id)
-          .maybeSingle();
-        if (profile) {
-          const fullName = `${profile.name || ''} ${profile.surname || ''}`.trim();
-          if (fullName) customerName = fullName;
-        }
-      }
-
-      // 3. Fetch all uploaded documents associated with this order
-      // Prioritize uploaded_documents in database created_at sequence
       const orderIdentifiers = [order.id, order.order_number].filter(Boolean);
-      let rawDocs: any[] = [];
-
-      const { data: docsByOrderId } = await supabase
-        .from('uploaded_documents')
-        .select('*')
-        .in('order_id', orderIdentifiers)
-        .order('created_at', { ascending: true });
-
-      if (docsByOrderId && docsByOrderId.length > 0) {
-        rawDocs = [...docsByOrderId];
-      }
-
       const rawDocConfigs: any[] = Array.isArray(order.documents_config) ? order.documents_config : [];
       const docIdsFromConfig = rawDocConfigs.map((d: any) => d.id).filter(Boolean);
 
-      if (docIdsFromConfig.length > 0) {
-        const { data: docsById } = await supabase
+      const [profileResult, docsByOrderResult, docsByIdResult] = await Promise.all([
+        order.user_id
+          ? supabase
+              .from('user_profiles')
+              .select('name, surname')
+              .eq('id', order.user_id)
+              .maybeSingle()
+          : Promise.resolve({ data: null }),
+        supabase
           .from('uploaded_documents')
           .select('*')
-          .in('id', docIdsFromConfig)
-          .order('created_at', { ascending: true });
+          .in('order_id', orderIdentifiers)
+          .order('created_at', { ascending: true }),
+        docIdsFromConfig.length > 0
+          ? supabase
+              .from('uploaded_documents')
+              .select('*')
+              .in('id', docIdsFromConfig)
+              .order('created_at', { ascending: true })
+          : Promise.resolve({ data: null }),
+      ]);
 
-        if (docsById && docsById.length > 0) {
-          for (const d of docsById) {
-            if (!rawDocs.some((existing) => existing.id === d.id)) {
-              rawDocs.push(d);
-            }
-          }
+      if (profileResult.data) {
+        const fullName = `${profileResult.data.name || ''} ${profileResult.data.surname || ''}`.trim();
+        if (fullName) customerName = fullName;
+      }
+
+      // Prioritize uploaded_documents in database created_at sequence.
+      const rawDocs: any[] = [...(docsByOrderResult.data || [])];
+      for (const d of docsByIdResult.data || []) {
+        if (!rawDocs.some((existing) => existing.id === d.id)) {
+          rawDocs.push(d);
         }
       }
 
@@ -2258,7 +2252,7 @@ export const shopkeeperApi = {
           const fromP = Number(r.fromPage ?? r.from ?? r.startPage ?? r.start ?? 1);
           const toP = Number(r.toPage ?? r.to ?? r.endPage ?? r.end ?? fromP);
           const printType = r.printType || r.color_mode || r.colorMode || 'Black & White';
-          const sides = r.sides || r.side || 'Single Side';
+          const sides = normalizePrintSides(r.sides || r.side || cfg?.sides || cfg?.duplex || order.config_sides);
           return {
             id: r.id || `cr-${idx}`,
             fromPage: fromP,
@@ -2280,7 +2274,7 @@ export const shopkeeperApi = {
         }
 
         const pageSize = cfg?.pageSize || cfg?.page_size || order.config_page_size || 'A4';
-        const sides = cfg?.sides || cfg?.duplex || order.config_sides || 'Single Side';
+        const sides = normalizePrintSides(cfg?.sides || cfg?.duplex || order.config_sides);
         const copies = cfg?.copies !== undefined ? Number(cfg.copies) : (order.config_copies ? Number(order.config_copies) : 1);
         const layout = cfg?.layout || cfg?.orientation || 'Portrait';
         const pagesPerSheet = cfg?.pagesPerSheet || cfg?.pages_per_sheet || '1-in-1';
@@ -2328,7 +2322,7 @@ export const shopkeeperApi = {
                 pages.push({
                   pageNum: p,
                   printType: r.printType || 'Black & White',
-                  sides: r.sides || 'Single Side',
+                  sides: normalizePrintSides(r.sides || r.side || cfg.sides || cfg.duplex || order.config_sides),
                   pageSize: r.pageSize || cfg.pageSize || 'A4',
                   isCustomRange: true,
                   rangeLabel: `Pages ${r.fromPage}–${r.toPage}`,
@@ -2352,7 +2346,7 @@ export const shopkeeperApi = {
             pages.push({
               pageNum: p,
               printType: cfg.printType || 'Black & White',
-              sides: cfg.sides || 'Single Side',
+              sides: normalizePrintSides(cfg.sides || cfg.duplex || order.config_sides),
               pageSize: cfg.pageSize || 'A4',
               isCustomRange: false,
               rangeLabel: 'All Pages',
@@ -2585,8 +2579,9 @@ export const shopkeeperApi = {
       printer.usage_type !== 'Color Only';
 
     const printerSupportsDuplex =
-      printer.is_duplex === true ||
-      printer.capabilities?.double_side === true;
+      printer.is_duplex !== false &&
+      printer.capabilities?.double_side !== false &&
+      (printer.is_duplex === true || printer.capabilities?.double_side === true);
 
     const printerSupportsSingleSide =
       printer.capabilities?.single_side !== false;
@@ -2633,7 +2628,7 @@ export const shopkeeperApi = {
         else bwNeeded = true;
 
         const rangeSides = (rng.sides || rng.side || config.sides || 'Single Side').toLowerCase();
-        const isDuplex = rangeSides.includes('back') || rangeSides.includes('double') || rangeSides.includes('duplex');
+        const isDuplex = isDuplexPrint(rangeSides);
         if (isDuplex) duplexNeeded = true;
         else singleNeeded = true;
 
@@ -2675,7 +2670,7 @@ export const shopkeeperApi = {
       }
 
       const reqSidesStr = (config.sides || 'Single Side').toLowerCase();
-      const isReqDuplex = reqSidesStr.includes('back') || reqSidesStr.includes('double') || reqSidesStr.includes('duplex');
+      const isReqDuplex = isDuplexPrint(reqSidesStr);
 
       if (isReqDuplex && !printerSupportsDuplex) {
         reasons.push('Requires Back-to-Back (Duplex) printing, but printer only supports Single Side.');

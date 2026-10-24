@@ -2,6 +2,7 @@ import qz from 'qz-tray';
 import { clearQzAuthToken, getQzAuthToken } from '@/lib/qzAuth';
 import { createFunctionError } from '@/lib/supabaseFunctionError';
 import type { DetectedPrinter } from '@/types/shopkeeper';
+import { isDuplexPrint } from '@/utils/printSides';
 
 export type { DetectedPrinter };
 
@@ -578,7 +579,7 @@ class QzTrayService {
 
       const copies = Number(payload.copies) || 1;
       const isColor = payload.colorMode === 'Color';
-      const isDuplex = payload.duplex === 'Back-to-Back' || payload.duplex === 'duplex';
+      const isDuplex = isDuplexPrint(payload.duplex);
       const isLandscape = (payload.orientation || '').toLowerCase() === 'landscape';
 
       // Item 1: Strict paper dimension mapping - Never force A4 when A3, Letter, Legal, etc. is requested
@@ -674,14 +675,15 @@ class QzTrayService {
         } else if (payload.driverProperties.colorMode) {
           configOptions.colorType = payload.driverProperties.colorMode === 'Color' ? 'color' : 'grayscale';
         }
-        if (payload.driverProperties.duplex !== undefined) {
-          const d = payload.driverProperties.duplex;
-          configOptions.duplex = d === 'Back-to-Back' || d === 'duplex' || d === true;
+        if (payload.driverProperties.duplex !== undefined && isDuplexPrint(payload.driverProperties.duplex)) {
+          configOptions.duplex = 'duplex';
         }
         if (payload.driverProperties.mediaSource && payload.driverProperties.mediaSource !== 'Auto Select') {
           configOptions.mediaSource = payload.driverProperties.mediaSource;
         }
       }
+
+      configOptions.duplex = isDuplex ? 'duplex' : false;
 
       // Create QZ Tray printer configuration with exact target physical dimensions
       const config = qz.configs.create(payload.printerName, configOptions);
@@ -804,7 +806,10 @@ class QzTrayService {
   }
 
   // Test Print (Sends attractive 1-page test document directly to verify hardware communication)
-  public async testPrint(printerName: string): Promise<{ success: boolean; message: string }> {
+  public async testPrint(
+    printerName: string,
+    settings: { colorMode?: 'B&W' | 'Color'; duplex?: boolean; paperSize?: string } = {}
+  ): Promise<{ success: boolean; message: string }> {
     if (!this.isConnected()) {
       const ok = await this.connect(true);
       if (!ok) {
@@ -820,10 +825,20 @@ class QzTrayService {
         dateStyle: 'medium',
         timeStyle: 'medium',
       });
+      const requestedPaperSize = String(settings.paperSize || 'A4').toUpperCase();
+      const paperKey = Object.keys(PAPER_SIZE_DIMENSIONS).find((key) => requestedPaperSize.includes(key)) || 'A4';
+      const paperSpec = PAPER_SIZE_DIMENSIONS[paperKey];
+      const paperCssName = paperKey === 'LETTER' ? 'letter' : paperKey.toLowerCase();
+      const isDuplex = settings.duplex === true;
+      const colorType = settings.colorMode === 'B&W' ? 'grayscale' : 'color';
 
       const config = qz.configs.create(printerName, {
         copies: 1,
-        colorType: 'color',
+        colorType,
+        duplex: isDuplex ? 'duplex' : false,
+        units: 'in',
+        size: { width: paperSpec.widthInches, height: paperSpec.heightInches },
+        orientation: 'portrait',
         jobName: 'PrintOn24_Printer_Test_Page',
       });
 
@@ -833,8 +848,8 @@ class QzTrayService {
 <head>
   <meta charset="utf-8">
   <style>
-    @page { size: A4 portrait; margin: 15mm; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #111827; margin: 0; padding: 24px; line-height: 1.5; background: #ffffff; }
+    @page { size: ${paperCssName} portrait; margin: 15mm; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: #111827; margin: 0; padding: 24px; line-height: 1.5; background: #ffffff; ${settings.colorMode === 'B&W' ? 'filter: grayscale(100%);' : ''} }
     .header { text-align: center; border-bottom: 3px solid #ea580c; padding-bottom: 16px; margin-bottom: 24px; }
     .logo { font-size: 34px; font-weight: 900; letter-spacing: -1px; }
     .logo span { color: #ea580c; }
@@ -884,6 +899,13 @@ class QzTrayService {
 </body>
 </html>
 `;
+      const testPageContent = brandedHtml.slice(brandedHtml.indexOf('<body>') + 6, brandedHtml.indexOf('</body>'));
+      const testHtml = isDuplex
+        ? brandedHtml.replace(
+            '</body>',
+            `<div style="page-break-before: always; break-before: page;"></div>${testPageContent}</body>`
+          )
+        : brandedHtml;
 
       try {
         await qz.print(config, [
@@ -891,7 +913,7 @@ class QzTrayService {
             type: 'pixel',
             format: 'html',
             flavor: 'plain',
-            data: brandedHtml,
+            data: testHtml,
           },
         ]);
       } catch {

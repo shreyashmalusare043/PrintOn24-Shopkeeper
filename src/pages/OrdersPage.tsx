@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useShopkeeper } from '@/contexts/ShopkeeperContext';
 import { shopkeeperApi } from '@/services/shopkeeperApi';
 import { localPrintAgent } from '@/services/localPrintAgent';
+import { loadDocument, parsePageRange, renderDocumentToPrintDataUrl } from '@/services/pdfViewerService';
 import { supabase } from '@/services/supabase';
 import type { PrintOrder, OrderStatus, ShopPricing, ShopPrinter, DynamicPaperType } from '@/types/shopkeeper';
 
@@ -27,6 +28,12 @@ const isAllowedVirtualPrinter = (name: string): boolean => {
   const lower = (name || '').toLowerCase();
   return lower.includes('microsoft print to pdf') || lower.includes('normal pdf printer');
 };
+
+const normalizePagesPerSheet = (value: unknown): '1-in-1' | '2-in-1' | '4-in-1' => {
+  const normalized = String(value || '').toLowerCase();
+  return normalized.includes('4') ? '4-in-1' : normalized.includes('2') ? '2-in-1' : '1-in-1';
+};
+
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -81,6 +88,15 @@ import { ManualDuplexModal } from '@/components/ManualDuplexModal';
 import type { PrintedSegment } from '@/types/shopkeeper';
 
 import { getUnprintedSubRanges, computeDocumentPageStatuses } from '@/utils/printRangeUtils';
+import { isDuplexPrint, normalizePrintSides } from '@/utils/printSides';
+import { PrintProgressControls } from '@/components/PrintProgressControls';
+import { usePrintQueueControl } from '@/hooks/usePrintQueueControl';
+import {
+  PrintDocumentSelectionDialog,
+  type PrintDocumentOption,
+} from '@/components/PrintDocumentSelectionDialog';
+
+type OrderPreviewData = NonNullable<Awaited<ReturnType<typeof shopkeeperApi.getOrderForPreview>>>;
 
 export const OrdersPage: React.FC = () => {
   const navigate = useNavigate();
@@ -94,6 +110,14 @@ export const OrdersPage: React.FC = () => {
   const [vipFilterActive, setVipFilterActive] = useState(false);
   const [isVipEnabled, setIsVipEnabled] = useState(false);
   const [printingOrderId, setPrintingOrderId] = useState<string | null>(null);
+  const printQueue = usePrintQueueControl();
+  const [printSelection, setPrintSelection] = useState<{
+    order: PrintOrder;
+    previewData: OrderPreviewData;
+    documents: PrintDocumentOption[];
+    printers: ShopPrinter[];
+  } | null>(null);
+  const [selectedPrintDocumentIds, setSelectedPrintDocumentIds] = useState<Set<string>>(new Set());
 
   // Shop-specific VIP User IDs mapping
   const [activeShopVipUserIds, setActiveShopVipUserIds] = useState<Set<string>>(new Set());
@@ -141,7 +165,11 @@ export const OrdersPage: React.FC = () => {
   const [editSides, setEditSides] = useState<string>('Single Side');
   const [editPageSize, setEditPageSize] = useState<string>('A4');
   const [editPaperType, setEditPaperType] = useState<string>('Standard 75 GSM');
+  const [editOrientation, setEditOrientation] = useState<'Portrait' | 'Landscape'>('Portrait');
+  const [editPagesPerSheet, setEditPagesPerSheet] = useState<'1-in-1' | '2-in-1' | '4-in-1'>('1-in-1');
   const [savingEdit, setSavingEdit] = useState(false);
+  const [clearAllPrintsOpen, setClearAllPrintsOpen] = useState(false);
+  const [clearingAllPrints, setClearingAllPrints] = useState(false);
   const [dynamicPaperTypes, setDynamicPaperTypes] = useState<DynamicPaperType[]>([]);
   const [pinnedOrderIds, setPinnedOrderIds] = useState<string[]>([]);
 
@@ -250,16 +278,63 @@ export const OrdersPage: React.FC = () => {
   }, [orders]);
 
   // Direct 1-Click Print Execution (Exact Physical Printer Routing, Capability Validation & Document Flow)
-  const handleDirectPrint = async (ord: PrintOrder) => {
+  const handleDirectPrint = async (
+    ord: PrintOrder,
+    selectedDocumentIds?: Set<string>,
+    preparedPreviewData?: OrderPreviewData,
+    preparedPrinters?: ShopPrinter[]
+  ) => {
+    let previewDataForPrint: OrderPreviewData | undefined = preparedPreviewData;
+    let printersForPrint = preparedPrinters;
+    if (!previewDataForPrint) {
+      setPrintingOrderId(ord.id);
+      try {
+        const [loadedPreviewData, loadedPrinters] = await Promise.all([
+          shopkeeperApi.getOrderForPreview(ord.id, ord.shop_id),
+          realPrinters.length > 0 ? Promise.resolve(realPrinters) : shopkeeperApi.getShopPrinters(ord.shop_id),
+        ]);
+        previewDataForPrint = loadedPreviewData || undefined;
+        printersForPrint = loadedPrinters;
+        const availableDocuments = loadedPreviewData?.documents || [];
+        if (loadedPreviewData && availableDocuments.length > 1) {
+          const options = availableDocuments.map((doc) => ({
+            id: doc.id,
+            name: doc.file_name || 'Untitled document',
+            totalPages: Math.max(1, Number(doc.total_pages) || 1),
+          }));
+          setPrintSelection({
+            order: ord,
+            previewData: loadedPreviewData,
+            documents: options,
+            printers: loadedPrinters,
+          });
+          setSelectedPrintDocumentIds(new Set(options.map((document) => document.id)));
+          setPrintingOrderId(null);
+          return;
+        }
+      } catch (err: any) {
+        console.error('Unable to load documents for print selection:', err);
+        toast.error(err?.message || 'Unable to load order documents for printing.');
+        setPrintingOrderId(null);
+        return;
+      }
+    }
+
     setPrintingOrderId(ord.id);
+    printQueue.begin(`#${ord.token_number}`, Math.max(1, Number(ord.total_pages) || 1));
     const toastId = toast.loading(`Validating Order #${ord.token_number} for physical printer...`);
 
     try {
-      // Step 1 & 2: Update status to VALIDATING in DB & state
-      await shopkeeperApi.updateOrderStatus(ord.id, 'Validating');
-
-      // Step 3: Retrieve Shop's configured printers (physical printers + explicitly added virtual printers)
-      const configuredPrinters = await shopkeeperApi.getShopPrinters(ord.shop_id);
+      printQueue.setMessage('Finding a compatible printer and loading documents...');
+      const [, configuredPrinters, previewData] = await Promise.all([
+        shopkeeperApi.updateOrderStatus(ord.id, 'Validating'),
+        printersForPrint
+          ? Promise.resolve(printersForPrint)
+          : realPrinters.length > 0
+            ? Promise.resolve(realPrinters)
+            : shopkeeperApi.getShopPrinters(ord.shop_id),
+        Promise.resolve(previewDataForPrint),
+      ]);
       
       const eligibleConfigured = configuredPrinters.filter(
         (p) => p.is_online !== false && (isPhysicalPrinter(p.name) || isAllowedVirtualPrinter(p.name))
@@ -273,7 +348,6 @@ export const OrdersPage: React.FC = () => {
       }
 
       // Step 4: Resolve ALL documents belonging to this Order ID (supporting multi-document orders)
-      const previewData = await shopkeeperApi.getOrderForPreview(ord.id, ord.shop_id);
       const docsToPrint = previewData?.documents && previewData.documents.length > 0
         ? previewData.documents
         : [
@@ -290,9 +364,40 @@ export const OrdersPage: React.FC = () => {
                 sides: ord.config_sides,
                 copies: ord.config_copies,
                 paperType: ord.config_paper_type,
+                layout: ord.config_layout || 'Portrait',
+                pagesPerSheet:
+                  ord.documents_config?.[0]?.pagesPerSheet ||
+                  ord.documents_config?.[0]?.pages_per_sheet ||
+                  '1-in-1',
               },
             },
           ];
+      const selectedIds = selectedDocumentIds || new Set(docsToPrint.map((doc: any) => doc.id));
+      const docsSelectedForPrint = docsToPrint.filter((doc: any) => selectedIds.has(doc.id));
+      if (docsSelectedForPrint.length === 0) {
+          throw new Error('Select at least one document to print.');
+      }
+
+      const docsNeedingUrl = docsToPrint.filter(
+        (doc: any) => !doc.file_url || doc.file_url.startsWith('blob:')
+      );
+      const sourceUrlByDocId = new Map<string, string>();
+      if (docsNeedingUrl.length > 0) {
+        const { data: sourceRecords, error: sourceRecordsError } = await supabase
+          .from('uploaded_documents')
+          .select('id, preview_url, storage_path, storage_bucket')
+          .in('id', docsNeedingUrl.map((doc: any) => doc.id));
+        if (sourceRecordsError) throw sourceRecordsError;
+        (sourceRecords || []).forEach((record: any) => {
+          const url =
+            record.preview_url && !record.preview_url.startsWith('blob:')
+              ? record.preview_url
+              : record.storage_path
+                ? `https://qogdzcgvkwdnpkeejpef.supabase.co/storage/v1/object/public/${record.storage_bucket || 'print_documents'}/${record.storage_path}`
+                : '';
+          if (url) sourceUrlByDocId.set(record.id, url);
+        });
+      }
 
       // Validate all documents and custom ranges against configured printer capability matrix (Item 2 & 3)
       interface SegmentPlan {
@@ -308,6 +413,8 @@ export const OrdersPage: React.FC = () => {
         copies: number;
         pageCount: number;
         printer: ShopPrinter;
+        layout: string;
+        pagesPerSheet: '1-in-1' | '2-in-1' | '4-in-1';
       }
 
       const segmentPlans: SegmentPlan[] = [];
@@ -343,28 +450,31 @@ export const OrdersPage: React.FC = () => {
         });
       };
 
-      for (const doc of docsToPrint) {
-        const cfg = doc.print_config || {};
-
-        let sourceDocUrl = doc.file_url;
-        if (!sourceDocUrl || sourceDocUrl.startsWith('blob:')) {
-          const { data: docRecord } = await supabase
-            .from('uploaded_documents')
-            .select('preview_url, storage_path, storage_bucket')
-            .eq('id', doc.id)
-            .maybeSingle();
-
-          if (docRecord) {
-            if (docRecord.preview_url && !docRecord.preview_url.startsWith('blob:')) {
-              sourceDocUrl = docRecord.preview_url;
-            } else if (docRecord.storage_path) {
-              sourceDocUrl = `https://qogdzcgvkwdnpkeejpef.supabase.co/storage/v1/object/public/${docRecord.storage_bucket || 'print_documents'}/${docRecord.storage_path}`;
-            }
+      docsToPrint
+        .filter((doc: any) => !selectedIds.has(doc.id))
+        .forEach((doc: any) => {
+          const totalPages = Math.max(1, Number(doc.total_pages) || Number(ord.total_pages) || 1);
+          const pendingPages = Array.from({ length: totalPages }, (_, index) => index + 1).filter(
+            (pageNum) => !isPageCoveredByPrinted(doc.id, doc.file_name, pageNum)
+          );
+          if (pendingPages.length > 0) {
+            pendingSegments.push({
+              docName: doc.file_name || 'Untitled document',
+              pageRange: pendingPages.join(','),
+              reason: 'Not selected for printing',
+              pagesCount: pendingPages.length,
+            });
           }
-        }
+        });
 
+      for (const doc of docsSelectedForPrint) {
+        const cfg = doc.print_config || {};
+        let sourceDocUrl =
+          doc.file_url && !doc.file_url.startsWith('blob:')
+            ? doc.file_url
+            : sourceUrlByDocId.get(doc.id) || '';
         if (!sourceDocUrl) {
-          sourceDocUrl = ord.file_url;
+          sourceDocUrl = ord.file_url || '';
         }
 
         const docTotal = Number(doc.total_pages) || Number(ord.total_pages) || 1;
@@ -390,7 +500,7 @@ export const OrdersPage: React.FC = () => {
                 fromPage: fromP,
                 toPage: toP,
                 printType: cfg.printType || 'B&W',
-                sides: cfg.sides || 'Single Side',
+                sides: normalizePrintSides(cfg.sides || cfg.duplex || ord.config_sides),
                 pageSize: cfg.pageSize || 'A4',
               });
             } else {
@@ -399,7 +509,7 @@ export const OrdersPage: React.FC = () => {
                 fromPage: p,
                 toPage: p,
                 printType: cfg.printType || 'B&W',
-                sides: cfg.sides || 'Single Side',
+                sides: normalizePrintSides(cfg.sides || cfg.duplex || ord.config_sides),
                 pageSize: cfg.pageSize || 'A4',
               });
             }
@@ -429,13 +539,14 @@ export const OrdersPage: React.FC = () => {
                 pageSize: r.pageSize || cfg.pageSize || 'A4',
                 printType: r.printType,
                 color_mode: r.printType,
-                sides: r.sides || 'Single Side',
+                sides: normalizePrintSides(r.sides || r.side || cfg.sides || cfg.duplex || ord.config_sides),
                 copies: Number(cfg.copies) || 1,
               };
 
               const matchResult = shopkeeperApi.findCompatiblePrinterForOrder(ord, eligibleConfigured, rangeConfig);
               const isColor = (r.printType || '').toLowerCase().includes('color');
-              const isDuplex = (r.sides || '').toLowerCase().includes('back') || (r.sides || '').toLowerCase().includes('double');
+              const rangeSides = normalizePrintSides(r.sides || r.side || cfg.sides || cfg.duplex || ord.config_sides);
+              const isDuplex = isDuplexPrint(rangeSides);
               const pageRangeStr = `${subR.fromPage}-${subR.toPage}`;
 
               if (!matchResult.compatiblePrinter) {
@@ -453,12 +564,14 @@ export const OrdersPage: React.FC = () => {
                   sourceDocUrl: sourceDocUrl || ord.file_url || '',
                   pageRange: pageRangeStr,
                   colorMode: isColor ? 'Color' : 'B&W',
-                  duplex: isDuplex ? 'Back-to-Back' : 'Single Side',
+                  duplex: rangeSides,
                   pageSize: rangeConfig.pageSize,
                   paperType: cfg.paperType || 'Standard 75 GSM',
                   copies: Number(cfg.copies) || 1,
                   pageCount: Math.max(1, subR.toPage - subR.fromPage + 1),
                   printer: matchResult.compatiblePrinter,
+                  layout: cfg.layout || cfg.orientation || 'Portrait',
+                  pagesPerSheet: normalizePagesPerSheet(cfg.pagesPerSheet || cfg.pages_per_sheet || cfg.nUp),
                 });
               }
             }
@@ -476,9 +589,13 @@ export const OrdersPage: React.FC = () => {
             continue; // Skip already printed - zero reprint guarantee
           }
 
-          const matchResult = shopkeeperApi.findCompatiblePrinterForOrder(ord, eligibleConfigured, cfg);
+          const effectiveSides = normalizePrintSides(cfg.sides || cfg.duplex || ord.config_sides);
+          const matchResult = shopkeeperApi.findCompatiblePrinterForOrder(ord, eligibleConfigured, {
+            ...cfg,
+            sides: effectiveSides,
+          });
           const isColor = (cfg.printType || '').toLowerCase().includes('color');
-          const isDuplex = (cfg.sides || '').toLowerCase().includes('back') || (cfg.sides || '').toLowerCase().includes('double');
+          const isDuplex = isDuplexPrint(effectiveSides);
 
           for (const subR of unprintedSubRanges) {
             const isFullDoc = subR.fromPage === 1 && subR.toPage === docTotal;
@@ -500,12 +617,14 @@ export const OrdersPage: React.FC = () => {
                 sourceDocUrl: sourceDocUrl || ord.file_url || '',
                 pageRange: pageRangeStr,
                 colorMode: isColor ? 'Color' : 'B&W',
-                duplex: isDuplex ? 'Back-to-Back' : 'Single Side',
+                duplex: effectiveSides,
                 pageSize: (cfg.pageSize as any) || (ord.config_page_size as any) || 'A4',
                 paperType: (cfg.paperType as any) || (ord.config_paper_type as any) || 'Standard 75 GSM',
                 copies: Number(cfg.copies) || Number(ord.config_copies) || 1,
                 pageCount: Math.max(1, subR.toPage - subR.fromPage + 1),
                 printer: matchResult.compatiblePrinter,
+                layout: cfg.layout || cfg.orientation || 'Portrait',
+                pagesPerSheet: normalizePagesPerSheet(cfg.pagesPerSheet || cfg.pages_per_sheet || cfg.nUp),
               });
             }
           }
@@ -514,17 +633,15 @@ export const OrdersPage: React.FC = () => {
 
       if (segmentPlans.length === 0) {
         await shopkeeperApi.updateOrderStatus(ord.id, 'No Compatible Printer');
-        const reasons = pendingSegments.map((p) => `${p.docName}: ${p.reason}`).join('; ');
-        toast.error(`No compatible printer currently available`, {
+        toast.error('No compatible printer found.', {
           id: toastId,
-          description: reasons || 'Please connect an appropriate printer or check paper size & color mode.',
+          description: 'Check printer paper, color, and duplex settings.',
         });
         setPrintingOrderId(null);
         return;
       }
 
       // Step 5: Transition to Ready to Print and Printing
-      await shopkeeperApi.updateOrderStatus(ord.id, 'Ready to Print');
       await shopkeeperApi.updateOrderStatus(ord.id, 'Printing');
       toast.loading(`Printing ${segmentPlans.length} compatible segment(s)...`, { id: toastId });
 
@@ -560,61 +677,135 @@ export const OrdersPage: React.FC = () => {
         plansToDispatch.push(plan);
       }
 
-      // Keep each printer's queue sequential while dispatching independent printers concurrently.
-      const plansByPrinter = new Map<string, typeof segmentPlans>();
-      for (const plan of plansToDispatch) {
-        const printerKey = plan.printer.id || plan.printer.name;
-        const printerPlans = plansByPrinter.get(printerKey) || [];
-        printerPlans.push(plan);
-        plansByPrinter.set(printerKey, printerPlans);
-      }
+      const totalPagesToPrint = plansToDispatch.reduce((total, plan) => total + plan.pageCount, 0);
+      printQueue.setTotalPages(totalPagesToPrint);
+      printQueue.setMessage('Preparing the first print sheet...');
+      let cancelled = false;
 
-      await Promise.all(
-        Array.from(plansByPrinter.values(), async (printerPlans) => {
-          for (const plan of printerPlans) {
-            const res = await localPrintAgent.dispatchPrintJob({
-              orderId: ord.id,
-              shopId: ord.shop_id,
-              pcId: plan.printer.pc_id || ord.target_pc_id || selectedPcId || '',
-              printerId: plan.printer.id,
-              printerName: plan.printer.name,
-              fileName: plan.docName,
-              fileUrl: plan.sourceDocUrl,
-              copies: plan.copies,
-              colorMode: plan.colorMode,
-              duplex: plan.duplex,
-              paperSize: plan.pageSize,
-              paperType: plan.paperType,
-              pageCount: plan.pageCount,
-              pageRange: plan.pageRange,
-              totalPrice: Number(ord.grand_total) || 0,
+      for (let planIndex = 0; planIndex < plansToDispatch.length; planIndex++) {
+        const plan = plansToDispatch[planIndex];
+        const totalDocumentPages = Math.max(1, Number(plan.doc.total_pages) || Number(ord.total_pages) || 1);
+        const pageNumbers = parsePageRange(plan.pageRange, totalDocumentPages);
+        const pagesPerSheet = plan.pagesPerSheet === '4-in-1' ? 4 : plan.pagesPerSheet === '2-in-1' ? 2 : 1;
+        const pagesPerJob = pagesPerSheet * (plan.duplex === 'Back-to-Back' ? 2 : 1);
+        const pageChunks: number[][] = [];
+        for (let pageIndex = 0; pageIndex < pageNumbers.length; pageIndex += pagesPerJob) {
+          pageChunks.push(pageNumbers.slice(pageIndex, pageIndex + pagesPerJob));
+        }
+
+        const wrapper =
+          plan.pagesPerSheet !== '1-in-1' ? await loadDocument(plan.sourceDocUrl) : undefined;
+        let nextChunkIndex = 0;
+        for (let chunkIndex = 0; chunkIndex < pageChunks.length; chunkIndex++) {
+          if (!(await printQueue.waitUntilReady())) {
+            cancelled = true;
+            break;
+          }
+
+          const pageNums = pageChunks[chunkIndex];
+          const pageRange = pageNums.join(',');
+          let pageImages: string[] | undefined;
+          if (wrapper && plan.pagesPerSheet !== '1-in-1') {
+            pageImages = [];
+            for (let pageIndex = 0; pageIndex < pageNums.length; pageIndex += pagesPerSheet) {
+              const sheetPages = pageNums.slice(pageIndex, pageIndex + pagesPerSheet);
+              pageImages.push(
+                await renderDocumentToPrintDataUrl(
+                  wrapper,
+                  sheetPages[0],
+                  {
+                    targetPaper: plan.pageSize,
+                    orientation: plan.layout.toLowerCase() === 'landscape' ? 'Landscape' : 'Portrait',
+                    scaling: 'fit',
+                    isBlackAndWhite: plan.colorMode === 'B&W',
+                    equalMargins: true,
+                    fitToPaper: true,
+                    pagesPerSheet: plan.pagesPerSheet,
+                    pageNums: sheetPages,
+                  },
+                  300
+                )
+              );
+            }
+          }
+
+          if (!(await printQueue.waitUntilReady())) {
+            cancelled = true;
+            break;
+          }
+
+          printQueue.update(plan.docName, pageNums[0], `Sending page ${pageNums[0]} to ${plan.printer.name}...`);
+          const res = await localPrintAgent.dispatchPrintJob({
+            orderId: ord.id,
+            shopId: ord.shop_id,
+            pcId: plan.printer.pc_id || ord.target_pc_id || selectedPcId || '',
+            printerId: plan.printer.id,
+            printerName: plan.printer.name,
+            fileName: plan.docName,
+            fileUrl: plan.sourceDocUrl,
+            pageImages,
+            copies: plan.copies,
+            colorMode: plan.colorMode,
+            duplex: plan.duplex,
+            paperSize: plan.pageSize,
+            paperType: plan.paperType,
+            pageCount: pageNums.length,
+            pageRange: pageImages ? undefined : pageRange,
+            totalPrice: Number(ord.grand_total) || 0,
+            orientation: plan.layout.toLowerCase() === 'landscape' ? 'Landscape' : 'Portrait',
+            scaling: 'fit',
+          });
+
+          if (!res.success) {
+            pendingSegments.push({
+              docName: plan.docName,
+              pageRange,
+              reason: res.message || 'Printer physical dispatch error',
+              pagesCount: pageNums.length,
             });
-
-            if (!res.success) {
-              pendingSegments.push({
-                docName: plan.docName,
-                pageRange: plan.pageRange,
-                reason: res.message || 'Printer physical dispatch error',
-                pagesCount: plan.pageCount,
-              });
-            } else {
+          } else {
+            const printedAt = new Date().toISOString();
+            pageNums.forEach((pageNum) => {
               newlyPrinted.push({
                 id: `seg-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
                 doc_id: plan.docId,
-                doc_name: plan.docName,
-                page_range: plan.pageRange || 'All Pages',
-                pages_count: plan.pageCount || 1,
+                doc_name: plan.doc.file_name || plan.docName,
+                page_range: String(pageNum),
+                pages_count: 1,
                 printer_name: plan.printer.name,
-                printed_at: new Date().toISOString(),
+                printed_at: printedAt,
                 status: 'printed',
                 color_mode: plan.colorMode,
                 duplex: plan.duplex,
                 copies: plan.copies,
               });
+            });
+            printQueue.completePages(pageNums.length);
+          }
+          nextChunkIndex = chunkIndex + 1;
+        }
+
+        if (cancelled) {
+          for (let remainingPlanIndex = planIndex; remainingPlanIndex < plansToDispatch.length; remainingPlanIndex++) {
+            const remainingPlan = plansToDispatch[remainingPlanIndex];
+            const remainingPages = parsePageRange(
+              remainingPlan.pageRange,
+              Math.max(1, Number(remainingPlan.doc.total_pages) || Number(ord.total_pages) || 1)
+            );
+            const firstRemainingChunk = remainingPlanIndex === planIndex ? nextChunkIndex : 0;
+            const pagesNotSent = remainingPages.slice(firstRemainingChunk * pagesPerJob);
+            if (pagesNotSent.length > 0) {
+              pendingSegments.push({
+                docName: remainingPlan.docName,
+                pageRange: pagesNotSent.join(','),
+                reason: 'Print cancelled by user',
+                pagesCount: pagesNotSent.length,
+              });
             }
           }
-        })
-      );
+          break;
+        }
+      }
 
       const allPrinted = [...alreadyPrinted, ...newlyPrinted];
 
@@ -688,7 +879,22 @@ export const OrdersPage: React.FC = () => {
       toast.error(err?.message || 'Print dispatch failed.', { id: toastId });
     } finally {
       setPrintingOrderId(null);
+      printQueue.finish();
     }
+  };
+
+  const handlePrintSelection = (printAll: boolean) => {
+    if (!printSelection) return;
+    const documentIds = printAll
+      ? new Set(printSelection.documents.map((document) => document.id))
+      : new Set(selectedPrintDocumentIds);
+    if (documentIds.size === 0) {
+      toast.error('Select at least one document to print.');
+      return;
+    }
+    const { order, previewData, printers } = printSelection;
+    setPrintSelection(null);
+    void handleDirectPrint(order, documentIds, previewData, printers);
   };
 
   // Open Edit Configuration Modal (supporting multi-document selection & All option)
@@ -705,6 +911,16 @@ export const OrdersPage: React.FC = () => {
     );
     setEditPageSize(ord.config_page_size || 'A4');
     setEditPaperType(ord.config_paper_type || 'Standard 75 GSM');
+    const firstDocumentConfig = Array.isArray(ord.documents_config) ? ord.documents_config[0] : undefined;
+    const savedOrderOrientation =
+      (ord as any).config_orientation ||
+      ord.config_layout ||
+      firstDocumentConfig?.orientation ||
+      firstDocumentConfig?.layout;
+    setEditOrientation(String(savedOrderOrientation || '').toLowerCase() === 'landscape' ? 'Landscape' : 'Portrait');
+    const savedPagesPerSheet =
+      firstDocumentConfig?.pagesPerSheet || firstDocumentConfig?.pages_per_sheet || firstDocumentConfig?.nUp;
+    setEditPagesPerSheet(normalizePagesPerSheet(savedPagesPerSheet));
     setSelectedEditDocId('all');
 
     // Fetch documents linked to this order
@@ -716,6 +932,35 @@ export const OrdersPage: React.FC = () => {
         .order('created_at', { ascending: true });
       if (docs && docs.length > 0) {
         setOrderDocsList(docs);
+        const firstDocConfig = docs[0].print_config || {};
+        const firstDocumentConfig = Array.isArray(ord.documents_config)
+          ? ord.documents_config.find((config: any) => config.id === docs[0].id)
+          : undefined;
+        const savedOrientation =
+          firstDocConfig.orientation ||
+          firstDocConfig.layout ||
+          firstDocumentConfig?.orientation ||
+          firstDocumentConfig?.layout;
+        const savedPagesPerSheet =
+          firstDocConfig.pagesPerSheet ||
+          firstDocConfig.pages_per_sheet ||
+          firstDocConfig.nUp ||
+          firstDocumentConfig?.pagesPerSheet ||
+          firstDocumentConfig?.pages_per_sheet ||
+          firstDocumentConfig?.nUp;
+        if (savedOrientation) {
+          setEditOrientation(String(savedOrientation).toLowerCase() === 'landscape' ? 'Landscape' : 'Portrait');
+        }
+        if (savedPagesPerSheet) {
+          const normalizedPagesPerSheet = normalizePagesPerSheet(savedPagesPerSheet);
+          setEditPagesPerSheet(
+            docs.some((doc) => Number(doc.total_pages) === 2) && normalizedPagesPerSheet === '4-in-1'
+              ? '1-in-1'
+              : normalizedPagesPerSheet
+          );
+        } else if (docs.some((doc) => Number(doc.total_pages) === 2)) {
+          setEditPagesPerSheet((current) => (current === '4-in-1' ? '1-in-1' : current));
+        }
       } else {
         setOrderDocsList([]);
       }
@@ -740,6 +985,30 @@ export const OrdersPage: React.FC = () => {
         );
         setEditPageSize(editingOrder.config_page_size || 'A4');
         setEditPaperType(editingOrder.config_paper_type || 'Standard 75 GSM');
+        setEditOrientation(
+          String(
+            (editingOrder as any).config_orientation ||
+              editingOrder.config_layout ||
+              editingOrder.documents_config?.[0]?.orientation ||
+              editingOrder.documents_config?.[0]?.layout ||
+              ''
+          ).toLowerCase() === 'landscape'
+            ? 'Landscape'
+            : 'Portrait'
+        );
+        const savedPagesPerSheet =
+          editingOrder.documents_config?.[0]?.pagesPerSheet ||
+          editingOrder.documents_config?.[0]?.pages_per_sheet ||
+          editingOrder.documents_config?.[0]?.nUp ||
+          orderDocsList[0]?.print_config?.pagesPerSheet ||
+          orderDocsList[0]?.print_config?.pages_per_sheet ||
+          orderDocsList[0]?.print_config?.nUp;
+        const normalizedPagesPerSheet = normalizePagesPerSheet(savedPagesPerSheet);
+        setEditPagesPerSheet(
+          orderDocsList.some((doc) => Number(doc.total_pages) === 2) && normalizedPagesPerSheet === '4-in-1'
+            ? '1-in-1'
+            : normalizedPagesPerSheet
+        );
       }
     } else {
       const doc = orderDocsList.find((d) => d.id === docId);
@@ -761,6 +1030,22 @@ export const OrdersPage: React.FC = () => {
         );
         setEditPageSize(docCfg.pageSize || docCfg.page_size || editingOrder?.config_page_size || 'A4');
         setEditPaperType(docCfg.paperType || docCfg.paper_type || editingOrder?.config_paper_type || 'Standard 75 GSM');
+        setEditOrientation(
+          String(docCfg.orientation || docCfg.layout || (editingOrder as any)?.config_orientation || '').toLowerCase() ===
+            'landscape'
+            ? 'Landscape'
+            : 'Portrait'
+        );
+        const pagesPerSheet = normalizePagesPerSheet(
+          docCfg.pagesPerSheet ||
+            docCfg.pages_per_sheet ||
+            docCfg.nUp ||
+            editingOrder?.documents_config?.find((config: any) => config.id === docId)?.pagesPerSheet ||
+            editingOrder?.documents_config?.find((config: any) => config.id === docId)?.pages_per_sheet ||
+            editingOrder?.documents_config?.find((config: any) => config.id === docId)?.nUp
+        );
+        const pageCount = Number(doc.total_pages) || Number(editingOrder?.total_pages) || 1;
+        setEditPagesPerSheet(pageCount === 2 && pagesPerSheet === '4-in-1' ? '1-in-1' : pagesPerSheet);
       }
     }
   };
@@ -874,6 +1159,10 @@ export const OrdersPage: React.FC = () => {
               page_size: editPageSize,
               paperType: editPaperType,
               paper_type: editPaperType,
+              orientation: editOrientation,
+              layout: editOrientation,
+              pagesPerSheet: editPagesPerSheet,
+              pages_per_sheet: editPagesPerSheet,
             }))
           : undefined;
 
@@ -900,6 +1189,10 @@ export const OrdersPage: React.FC = () => {
               page_size: editPageSize,
               paperType: editPaperType,
               paper_type: editPaperType,
+              orientation: editOrientation,
+              layout: editOrientation,
+              pagesPerSheet: editPagesPerSheet,
+              pages_per_sheet: editPagesPerSheet,
             };
             await supabase
               .from('uploaded_documents')
@@ -936,6 +1229,10 @@ export const OrdersPage: React.FC = () => {
           page_size: editPageSize,
           paperType: editPaperType,
           paper_type: editPaperType,
+          orientation: editOrientation,
+          layout: editOrientation,
+          pagesPerSheet: editPagesPerSheet,
+          pages_per_sheet: editPagesPerSheet,
         };
 
         const { error: docErr } = await supabase
@@ -961,6 +1258,10 @@ export const OrdersPage: React.FC = () => {
                   page_size: editPageSize,
                   paperType: editPaperType,
                   paper_type: editPaperType,
+                  orientation: editOrientation,
+                  layout: editOrientation,
+                  pagesPerSheet: editPagesPerSheet,
+                  pages_per_sheet: editPagesPerSheet,
                 }
               : d
           );
@@ -1151,8 +1452,197 @@ export const OrdersPage: React.FC = () => {
     setVipFilterActive(false);
   };
 
+  const editTargetPageCounts =
+    selectedEditDocId === 'all'
+      ? orderDocsList.length
+        ? orderDocsList.map((doc) =>
+            Math.max(1, Number(doc.total_pages || doc.totalPages || editingOrder?.total_pages) || 1)
+          )
+        : [Math.max(1, Number(editingOrder?.total_pages) || 1)]
+      : [
+          Math.max(
+            1,
+            Number(orderDocsList.find((doc) => doc.id === selectedEditDocId)?.total_pages) ||
+              Number(editingOrder?.total_pages) ||
+              1
+          ),
+        ];
+  const isNUpDisabled = editTargetPageCounts.some((pageCount) => pageCount <= 1);
+  const isFourUpDisabled = isNUpDisabled || editTargetPageCounts.includes(2);
+
+  useEffect(() => {
+    if (isNUpDisabled && editPagesPerSheet !== '1-in-1') {
+      setEditPagesPerSheet('1-in-1');
+    } else if (isFourUpDisabled && editPagesPerSheet === '4-in-1') {
+      setEditPagesPerSheet('1-in-1');
+    }
+  }, [editPagesPerSheet, isFourUpDisabled, isNUpDisabled]);
+
+  const handleClearAllPrints = async () => {
+    if (!user?.shop_id) {
+      toast.error('Shop session is unavailable. Please sign in again.');
+      return;
+    }
+
+    setClearingAllPrints(true);
+    try {
+      const { data: shopOrders, error: selectError } = await supabase
+        .from('print_orders')
+        .select('id, order_status')
+        .eq('shop_id', user.shop_id);
+      if (selectError) throw selectError;
+
+      const { data: persistedHistory, error: historyError } = await supabase
+        .from('print_orders')
+        .select('*')
+        .eq('shop_id', user.shop_id)
+        .in('order_status', ['Completed', 'Dismissed'])
+        .order('completed_at', { ascending: false })
+        .limit(100);
+      if (historyError) throw historyError;
+
+      const historyIds = new Set((persistedHistory || []).map((order) => order.id));
+      const completedOrderIds = (shopOrders || [])
+        .filter(
+          (order) =>
+            order.order_status !== 'Cancelled' &&
+            order.order_status !== 'Dismissed' &&
+            !historyIds.has(order.id)
+        )
+        .map((order) => order.id);
+      const completedAt = new Date().toISOString();
+
+      for (let i = 0; i < completedOrderIds.length; i += 100) {
+        const { error } = await supabase
+          .from('print_orders')
+          .update({
+            remaining_pages_info: [],
+            order_status: 'Completed',
+            completed_at: completedAt,
+          })
+          .in('id', completedOrderIds.slice(i, i + 100));
+        if (error) throw error;
+      }
+
+      setOrders((currentOrders) =>
+        currentOrders.map((order) =>
+          completedOrderIds.includes(order.id)
+            ? { ...order, remaining_pages_info: [], order_status: 'Completed', completed_at: completedAt }
+            : order
+        )
+      );
+      const fetchedHistory: PrintOrder[] = (persistedHistory || []).map((order) => ({
+        ...order,
+        customer_name: order.customer_name || order.user_name || 'Customer',
+        user_name: order.user_name || order.customer_name || 'Customer',
+        user_phone: order.user_phone || order.customer_phone,
+      }));
+      const movedOrders: PrintOrder[] = orders
+        .filter((order) => completedOrderIds.includes(order.id))
+        .map((order) => ({
+          ...order,
+          remaining_pages_info: [],
+          order_status: 'Completed',
+          completed_at: completedAt,
+        }));
+      setRecentHistoryOrders((history) => {
+        const ordersById = new Map<string, PrintOrder>();
+        [...history, ...fetchedHistory, ...movedOrders].forEach((order) => ordersById.set(order.id, order));
+        return Array.from(ordersById.values()).sort(
+          (left, right) =>
+            new Date(right.completed_at || right.created_at).getTime() -
+            new Date(left.completed_at || left.created_at).getTime()
+        );
+      });
+      setStatusFilter('Active');
+      setSearchQuery('');
+      setDateFilter('all');
+      setCustomDateFrom('');
+      setCustomDateTo('');
+      setPrintTypeFilter('all');
+      setVipFilterActive(false);
+      setClearAllPrintsOpen(false);
+      toast.success(`Moved ${completedOrderIds.length} order(s) to Recent History. Amounts and page counts were not changed.`);
+      await Promise.all([fetchOrders(), fetchRecentHistoryOrders()]);
+    } catch (error) {
+      console.error('Failed to clear print progress:', error);
+      toast.error('Could not clear print progress. Please try again.');
+    } finally {
+      setClearingAllPrints(false);
+    }
+  };
+
+  const handleReprintOrder = async (order: PrintOrder) => {
+    if (!user?.shop_id) {
+      toast.error('Shop session is unavailable. Please sign in again.');
+      return;
+    }
+    if (Date.now() - new Date(order.created_at || 0).getTime() > 12 * 60 * 60 * 1000) {
+      toast.error('This document has expired and can no longer be reprinted.');
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('print_orders')
+        .update({
+          printed_segments: [],
+          remaining_pages_info: [],
+          order_status: 'In Queue',
+          completed_at: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', order.id)
+        .eq('shop_id', user.shop_id);
+      if (error) throw error;
+
+      const queuedOrder: PrintOrder = {
+        ...order,
+        order_status: 'In Queue',
+        printed_segments: [],
+        remaining_pages_info: [],
+        completed_at: undefined,
+      };
+      setOrders((currentOrders) => [queuedOrder, ...currentOrders.filter((item) => item.id !== order.id)]);
+      setRecentHistoryOrders((history) => history.filter((item) => item.id !== order.id));
+      setStatusFilter('Active');
+      setSearchQuery('');
+      if (selectedPcId !== 'all' && order.target_pc_id && selectedPcId !== order.target_pc_id) {
+        setSelectedPcId('all');
+      }
+      toast.success(`Order #${order.token_number} added back to the queue. Click Go For Print to reprint.`);
+    } catch (error) {
+      console.error('Failed to queue order for reprint:', error);
+      toast.error('Could not add this order back to the queue.');
+    }
+  };
+
   return (
     <div className="space-y-6 font-sans">
+      <PrintDocumentSelectionDialog
+        open={printSelection !== null}
+        documents={printSelection?.documents || []}
+        selectedDocumentIds={selectedPrintDocumentIds}
+        onOpenChange={(open) => {
+          if (!open) setPrintSelection(null);
+        }}
+        onSelectionChange={(documentId, selected) => {
+          setSelectedPrintDocumentIds((current) => {
+            const next = new Set(current);
+            if (selected) next.add(documentId);
+            else next.delete(documentId);
+            return next;
+          });
+        }}
+        onPrintAll={() => handlePrintSelection(true)}
+        onPrintSelected={() => handlePrintSelection(false)}
+      />
+      <PrintProgressControls
+        progress={printQueue.progress}
+        onPause={printQueue.pause}
+        onResume={printQueue.resume}
+        onCancel={printQueue.cancel}
+      />
       {/* ---------------- 1. PRINT QUEUE HUB HEADER ---------------- */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 md:p-6 bg-card border border-border rounded-xl shadow-sm">
         <div>
@@ -1185,7 +1675,7 @@ export const OrdersPage: React.FC = () => {
       {/* ---------------- 2. SEARCH & FILTER BAR WITH VIP TOGGLE ---------------- */}
       <Card className="bg-card border-border rounded-xl shadow-sm">
         <CardContent className="p-4">
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+          <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
             {/* Search Input */}
             <div className="relative flex-1 min-w-0">
               <Search className="w-4 h-4 text-muted-foreground absolute left-3 top-2.5 pointer-events-none" />
@@ -1196,6 +1686,18 @@ export const OrdersPage: React.FC = () => {
                 className="pl-9 h-9 text-xs font-sans bg-background border-border rounded-lg"
               />
             </div>
+
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setClearAllPrintsOpen(true)}
+              disabled={clearingAllPrints}
+              className="h-9 px-3 text-xs font-sans font-semibold rounded-lg gap-1.5 shrink-0 border-destructive/40 text-destructive hover:bg-destructive/10"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Clear All</span>
+            </Button>
 
             {/* Status Filter Popover Button */}
             <Popover>
@@ -1566,7 +2068,7 @@ export const OrdersPage: React.FC = () => {
                               disabled={printingOrderId === ord.id}
                               onClick={() => handleDirectPrint(ord)}
                               className="h-8 px-3 text-xs font-heading font-bold bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg gap-1.5 shadow-sm active:scale-95 transition-transform"
-                              title="Direct silent physical print without any modals"
+                              title="Print this order"
                             >
                               <Printer className={`w-3.5 h-3.5 ${printingOrderId === ord.id ? 'animate-spin' : ''}`} />
                               <span>Go For Print</span>
@@ -1737,16 +2239,31 @@ export const OrdersPage: React.FC = () => {
                         </td>
 
                         <td className="py-2.5 px-4 text-right whitespace-nowrap">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => navigate(`/orders/${ord.id}/preview`)}
-                            className="h-7 text-xs rounded-lg gap-1 font-sans"
-                            title="Preview Order Metadata & Details"
-                          >
-                            <Eye className="w-3 h-3" />
-                            <span>Preview</span>
-                          </Button>
+                          <div className="flex justify-end gap-1.5">
+                            {ord.order_status === 'Completed' && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleReprintOrder(ord)}
+                                disabled={isOlderThan12H}
+                                className="h-7 text-xs rounded-lg gap-1 font-sans"
+                                title={isOlderThan12H ? 'Document retention expired' : 'Add order back to queue for reprinting'}
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                                <span>Reprint</span>
+                              </Button>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => navigate(`/orders/${ord.id}/preview`)}
+                              className="h-7 text-xs rounded-lg gap-1 font-sans"
+                              title="Preview Order Metadata & Details"
+                            >
+                              <Eye className="w-3 h-3" />
+                              <span>Preview</span>
+                            </Button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1777,14 +2294,14 @@ export const OrdersPage: React.FC = () => {
       </Card>
       {/* ---------------- 4. EDIT PRINT CONFIGURATION MODAL ---------------- */}
       <Dialog open={editModalOpen} onOpenChange={setEditModalOpen}>
-        <DialogContent className="max-w-[calc(100%-2rem)] md:max-w-md bg-card border-border rounded-xl font-sans">
+        <DialogContent className="max-w-[calc(100%-2rem)] md:max-w-md max-h-[90vh] overflow-y-auto bg-card border-border rounded-xl font-sans">
           <DialogHeader>
             <DialogTitle className="text-base font-heading font-bold uppercase text-foreground flex items-center gap-2">
               <Pencil className="w-4 h-4 text-primary" />
               <span>Edit Print Configuration</span>
             </DialogTitle>
             <DialogDescription className="text-xs text-muted-foreground">
-              Modify print parameters for Token #{editingOrder?.token_number} ({editingOrder?.document_name})
+              Modify print parameters for Token no {editingOrder?.token_number}
             </DialogDescription>
           </DialogHeader>
 
@@ -1921,6 +2438,33 @@ export const OrdersPage: React.FC = () => {
               </select>
             </div>
 
+            {/* Page Orientation */}
+            <div className="space-y-1">
+              <Label className="text-xs font-semibold text-foreground">Page Orientation</Label>
+              <select
+                value={editOrientation}
+                onChange={(e) => setEditOrientation(e.target.value as 'Portrait' | 'Landscape')}
+                className="w-full h-9 px-3 rounded-lg border border-border bg-background text-foreground text-xs focus:ring-1 focus:ring-primary"
+              >
+                <option value="Portrait">Portrait</option>
+                <option value="Landscape">Landscape</option>
+              </select>
+            </div>
+
+            {/* Pages per sheet */}
+            <div className="space-y-1">
+              <Label className="text-xs font-semibold text-foreground">Pages per Sheet</Label>
+              <select
+                value={editPagesPerSheet}
+                onChange={(e) => setEditPagesPerSheet(normalizePagesPerSheet(e.target.value))}
+                className="w-full h-9 px-3 rounded-lg border border-border bg-background text-foreground text-xs focus:ring-1 focus:ring-primary"
+              >
+                <option value="1-in-1">1 in 1 (Normal)</option>
+                <option value="2-in-1" disabled={isNUpDisabled}>2 in 1</option>
+                <option value="4-in-1" disabled={isFourUpDisabled}>4 in 1</option>
+              </select>
+            </div>
+
             {/* Paper Type */}
             <div className="space-y-1">
               <Label className="text-xs font-semibold text-foreground">Paper Type</Label>
@@ -1967,6 +2511,38 @@ export const OrdersPage: React.FC = () => {
               className="text-xs font-semibold bg-primary text-primary-foreground rounded-lg"
             >
               {savingEdit ? 'Saving...' : 'Save Configuration'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={clearAllPrintsOpen} onOpenChange={setClearAllPrintsOpen}>
+        <DialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md bg-card border-border rounded-xl font-sans">
+          <DialogHeader>
+            <DialogTitle className="text-base font-heading font-bold text-foreground">Clear All Prints?</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              This moves all active orders to Recent History without changing their print records, amounts, or page counts.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={clearingAllPrints}
+              onClick={() => setClearAllPrintsOpen(false)}
+              className="text-xs rounded-lg"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={clearingAllPrints}
+              onClick={handleClearAllPrints}
+              className="text-xs rounded-lg"
+            >
+              {clearingAllPrints ? 'Clearing...' : 'Clear All Prints'}
             </Button>
           </DialogFooter>
         </DialogContent>

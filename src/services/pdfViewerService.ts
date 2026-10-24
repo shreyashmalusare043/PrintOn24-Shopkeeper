@@ -77,6 +77,20 @@ export function parsePageRange(rangeStr: string | undefined | null, totalPages: 
 const documentCache = new Map<string, Promise<PdfDocumentWrapper>>();
 const thumbCache = new Map<string, string>();
 
+export function clearDocumentCache(): void {
+  const cachedDocuments = Array.from(documentCache.values());
+  documentCache.clear();
+  thumbCache.clear();
+
+  for (const documentPromise of cachedDocuments) {
+    void documentPromise
+      .then((wrapper) => wrapper.pdfDoc?.destroy?.())
+      .catch((err) => {
+        console.warn('Failed to release cached PDF document:', err);
+      });
+  }
+}
+
 /**
  * Loads a PDF document or image from public URL or storage path with instant caching.
  */
@@ -241,6 +255,9 @@ export async function loadDocument(fileUrl: string): Promise<PdfDocumentWrapper>
         cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/',
         cMapPacked: true,
         enableXfa: true,
+        disableAutoFetch: true,
+        disableStream: true,
+        rangeChunkSize: 64 * 1024,
       });
       const pdfDoc = await loadingTask.promise;
       let detectedOrientation: 'Portrait' | 'Landscape' = 'Portrait';
@@ -515,6 +532,7 @@ export async function renderPdfPage(
     for (let i = 0; i < subPageNums.length && i < slots.length; i++) {
       const pNum = subPageNums[i];
       const slot = slots[i];
+      const subRenderDpr = dpr * (scale > 0.5 ? 2 : 1);
 
       try {
         const subPage = await pdfWrapper.pdfDoc.getPage(pNum);
@@ -524,7 +542,7 @@ export async function renderPdfPage(
 
         // Proportional fit into slot
         const subFitScale = Math.min(slot.w / subUnscaled.width, slot.h / subUnscaled.height);
-        const subRenderViewport = subPage.getViewport({ scale: subFitScale * dpr, rotation: subEffRot });
+        const subRenderViewport = subPage.getViewport({ scale: subFitScale * subRenderDpr, rotation: subEffRot });
 
         const subOffscreen = document.createElement('canvas');
         subOffscreen.width = Math.floor(subRenderViewport.width);
@@ -540,17 +558,12 @@ export async function renderPdfPage(
           }).promise;
 
           // Draw centered in slot
-          const drawnW = Math.round(subRenderViewport.width / dpr);
-          const drawnH = Math.round(subRenderViewport.height / dpr);
+          const drawnW = Math.round(subRenderViewport.width / subRenderDpr);
+          const drawnH = Math.round(subRenderViewport.height / subRenderDpr);
           const posX = slot.x + Math.max(0, Math.round((slot.w - drawnW) / 2));
           const posY = slot.y + Math.max(0, Math.round((slot.h - drawnH) / 2));
 
           ctx.drawImage(subOffscreen, posX, posY, drawnW, drawnH);
-
-          // Subtle hairline border around each N-up page cell
-          ctx.strokeStyle = '#e2e8f0';
-          ctx.lineWidth = 0.5;
-          ctx.strokeRect(posX, posY, drawnW, drawnH);
         }
       } catch (subErr) {
         console.warn(`Failed to render N-up sub-page ${pNum}:`, subErr);
