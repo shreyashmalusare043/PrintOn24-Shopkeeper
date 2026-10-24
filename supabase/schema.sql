@@ -724,6 +724,7 @@ CREATE TABLE IF NOT EXISTS "public"."print_orders" (
     "printed_segments" "jsonb" DEFAULT '[]'::"jsonb",
     "remaining_pages_info" "jsonb",
     "completed_at" timestamp with time zone,
+    "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "config_layout" "text" DEFAULT 'Portrait'::"text"
 );
 
