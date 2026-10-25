@@ -140,6 +140,15 @@ export interface PrintJob {
 export interface ShopPricing {
   id: string;
   shop_id: string;
+  bw_pricing_mode: 'page' | 'print';
+  color_pricing_mode: 'page' | 'print';
+  eligible_bw_single: boolean;
+  eligible_bw_back_to_back: boolean;
+  eligible_color_single: boolean;
+  eligible_color_back_to_back: boolean;
+  short_page_limit: number;
+  bw_short_page_rate: number;
+  color_short_page_rate: number;
   color_single: number;
   bw_single: number;
   color_double: number;
@@ -437,6 +446,10 @@ export interface DynamicPaperType {
   id: string;
   name: string;
   is_active: boolean;
+  eligible_bw_single: boolean;
+  eligible_bw_back_to_back: boolean;
+  eligible_color_single: boolean;
+  eligible_color_back_to_back: boolean;
   bw_price: number;
   color_price: number;
   is_special?: boolean;

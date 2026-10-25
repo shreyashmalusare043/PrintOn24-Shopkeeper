@@ -25,10 +25,17 @@ import type {
   SupportTicket,
   UserMembership,
 } from '@/types/shopkeeper';
+import {
+  getBillablePrintUnits,
+  getBillablePrintUnitsForDocuments,
+  getDocumentPageCounts,
+  getShortDocumentRate,
+  isPrintModeEligible,
+} from '@/utils/printPricing';
+import { isDuplexPrint, normalizePrintSides } from '@/utils/printSides';
 import { localPrintAgent, type PrintJobPayload } from './localPrintAgent';
 import { isAllowedVirtualPrinter, isPhysicalPrinter } from './qzTrayService';
 import { supabase } from './supabase';
-import { isDuplexPrint, normalizePrintSides } from '@/utils/printSides';
 
 const AUTH_KEY = 'copygo_shopkeeper_session';
 
@@ -1814,6 +1821,15 @@ export const shopkeeperApi = {
       if (data) {
         return {
           ...data,
+          bw_pricing_mode: data.bw_pricing_mode === 'page' ? 'page' : 'print',
+          color_pricing_mode: data.color_pricing_mode === 'page' ? 'page' : 'print',
+          eligible_bw_single: data.eligible_bw_single !== false,
+          eligible_bw_back_to_back: data.eligible_bw_back_to_back !== false,
+          eligible_color_single: data.eligible_color_single !== false,
+          eligible_color_back_to_back: data.eligible_color_back_to_back !== false,
+          short_page_limit: Number(data.short_page_limit ?? 0),
+          bw_short_page_rate: Number(data.bw_short_page_rate ?? 0),
+          color_short_page_rate: Number(data.color_short_page_rate ?? 0),
           bw_single: Number(data.bw_single ?? 1.0),
           bw_double: Number(data.bw_double ?? 1.5),
           bw_back_to_back: Number(data.bw_double ?? 1.5),
@@ -1839,6 +1855,15 @@ export const shopkeeperApi = {
       return {
         id: `prc_${shopId}`,
         shop_id: shopId,
+        bw_pricing_mode: 'print',
+        color_pricing_mode: 'print',
+        eligible_bw_single: true,
+        eligible_bw_back_to_back: true,
+        eligible_color_single: true,
+        eligible_color_back_to_back: true,
+        short_page_limit: 0,
+        bw_short_page_rate: 0,
+        color_short_page_rate: 0,
         bw_single: 1.0,
         bw_double: 1.5,
         bw_back_to_back: 1.5,
@@ -1863,6 +1888,15 @@ export const shopkeeperApi = {
       return {
         id: `prc_${shopId}`,
         shop_id: shopId,
+        bw_pricing_mode: 'print',
+        color_pricing_mode: 'print',
+        eligible_bw_single: true,
+        eligible_bw_back_to_back: true,
+        eligible_color_single: true,
+        eligible_color_back_to_back: true,
+        short_page_limit: 0,
+        bw_short_page_rate: 0,
+        color_short_page_rate: 0,
         bw_single: 1.0,
         bw_double: 1.5,
         bw_back_to_back: 1.5,
@@ -1901,6 +1935,15 @@ export const shopkeeperApi = {
       // 2. Persist to shop_pricing using onConflict on unique shop_id
       const payload: Record<string, any> = {
         shop_id: pricing.shop_id,
+        bw_pricing_mode: pricing.bw_pricing_mode || 'print',
+        color_pricing_mode: pricing.color_pricing_mode || 'print',
+        eligible_bw_single: pricing.eligible_bw_single !== false,
+        eligible_bw_back_to_back: pricing.eligible_bw_back_to_back !== false,
+        eligible_color_single: pricing.eligible_color_single !== false,
+        eligible_color_back_to_back: pricing.eligible_color_back_to_back !== false,
+        short_page_limit: Number(pricing.short_page_limit ?? 0),
+        bw_short_page_rate: Number(pricing.bw_short_page_rate ?? 0),
+        color_short_page_rate: Number(pricing.color_short_page_rate ?? 0),
         bw_single: Number(pricing.bw_single ?? 1.0),
         bw_double: Number(pricing.bw_back_to_back ?? pricing.bw_double ?? 1.5),
         color_single: Number(pricing.color_single ?? 5.0),
@@ -1938,6 +1981,7 @@ export const shopkeeperApi = {
     shopId: string,
     params: {
       totalPages: number;
+      documentPageCounts?: number[];
       copies?: number;
       pageSize?: string;
       paperType?: string;
@@ -1965,7 +2009,8 @@ export const shopkeeperApi = {
     const shopPricing = await this.getShopPricing(shopId);
     const dynamicTypes = await this.getDynamicPaperTypes(shopId);
 
-    const pages = Math.max(1, params.totalPages || 1);
+    const documentPageCounts = getDocumentPageCounts(params.totalPages, params.documentPageCounts);
+    const pages = documentPageCounts.reduce((total, documentPages) => total + documentPages, 0);
     const copies = Math.max(1, params.copies || 1);
     const isColor = (params.printType || '').toLowerCase().includes('color') || (params.printType || '').toLowerCase().includes('colour');
     const isDuplex = (params.sides || '').toLowerCase().includes('back') || (params.sides || '').toLowerCase().includes('double');
@@ -1980,6 +2025,9 @@ export const shopkeeperApi = {
         pt.name.toLowerCase() === pageSize.toLowerCase()
       )
     );
+    if (!isPrintModeEligible(shopPricing, matchedDynamic, isColor, isDuplex)) {
+      throw new Error('This print mode is not available for the selected paper type.');
+    }
 
     let baseRate = 0;
     let paperSurcharge = 0;
@@ -2003,8 +2051,43 @@ export const shopkeeperApi = {
       }
     }
 
-    const unitRate = Math.max(0.5, baseRate + paperSurcharge);
-    const printCost = unitRate * pages * copies;
+    const standardUnitRate = baseRate + paperSurcharge;
+    const standardBaseRate = isColor
+      ? isDuplex
+        ? Number(shopPricing.color_back_to_back || 8.0)
+        : Number(shopPricing.color_single || 10.0)
+      : isDuplex
+        ? Number(shopPricing.bw_back_to_back || 1.5)
+        : Number(shopPricing.bw_single || 2.0);
+    const configuredShortPageRate = isColor
+      ? shopPricing.color_short_page_rate
+      : shopPricing.bw_short_page_rate;
+    const pricingMode = isColor ? shopPricing.color_pricing_mode : shopPricing.bw_pricing_mode;
+    const billableUnits = getBillablePrintUnitsForDocuments(
+      documentPageCounts,
+      copies,
+      isDuplex,
+      pricingMode || 'print'
+    );
+    const printCost = documentPageCounts.reduce((total, documentPages) => {
+      const shortPageRate = getShortDocumentRate(
+        documentPages,
+        shopPricing.short_page_limit,
+        configuredShortPageRate
+      );
+      const unitRate = Math.max(
+        0.5,
+        shortPageRate === undefined
+          ? standardUnitRate
+          : shortPageRate + Math.max(0, standardUnitRate - standardBaseRate)
+      );
+      return (
+        total +
+        unitRate *
+          getBillablePrintUnits(documentPages, copies, isDuplex, pricingMode || 'print')
+      );
+    }, 0);
+    const unitRate = billableUnits > 0 ? printCost / billableUnits : standardUnitRate;
 
     let finishingCharges = 0;
     if (params.binding) finishingCharges += Number(shopPricing.binding_rate || 30.0);
@@ -4943,7 +5026,9 @@ The merchant is solely responsible for credentials assigned to their counter sta
   async getDynamicPaperTypes(shopId: string): Promise<DynamicPaperType[]> {
     const { data, error } = await supabase
       .from('shop_dynamic_paper_types')
-      .select('id, name, is_active, bw_price, color_price, is_special')
+      .select(
+        'id, name, is_active, bw_price, color_price, is_special, eligible_bw_single, eligible_bw_back_to_back, eligible_color_single, eligible_color_back_to_back'
+      )
       .eq('shop_id', shopId)
       .order('name');
 
@@ -4952,15 +5037,23 @@ The merchant is solely responsible for credentials assigned to their counter sta
       throw error;
     }
 
-    if (data && data.length > 0) return data as DynamicPaperType[];
+    if (data && data.length > 0) {
+      return data.map((paper) => ({
+        ...paper,
+        eligible_bw_single: paper.eligible_bw_single !== false,
+        eligible_bw_back_to_back: paper.eligible_bw_back_to_back !== false,
+        eligible_color_single: paper.eligible_color_single !== false,
+        eligible_color_back_to_back: paper.eligible_color_back_to_back !== false,
+      })) as DynamicPaperType[];
+    }
 
     const defaultTypes: DynamicPaperType[] = [
-      { id: 'a4', name: 'A4', is_active: true, bw_price: 2.0, color_price: 10.0, is_special: false },
-      { id: 'a3', name: 'A3', is_active: true, bw_price: 5.0, color_price: 20.0, is_special: true },
-      { id: 'a5', name: 'A5', is_active: true, bw_price: 1.5, color_price: 8.0, is_special: false },
-      { id: 'bond', name: 'Bond Paper', is_active: true, bw_price: 4.0, color_price: 12.0, is_special: true },
-      { id: 'glossy', name: 'Glossy Photo', is_active: true, bw_price: 15.0, color_price: 25.0, is_special: true },
-      { id: 'envelope', name: 'Envelope', is_active: false, bw_price: 5.0, color_price: 15.0, is_special: true },
+      { id: 'a4', name: 'A4', is_active: true, bw_price: 2.0, color_price: 10.0, is_special: false, eligible_bw_single: true, eligible_bw_back_to_back: true, eligible_color_single: true, eligible_color_back_to_back: true },
+      { id: 'a3', name: 'A3', is_active: true, bw_price: 5.0, color_price: 20.0, is_special: true, eligible_bw_single: true, eligible_bw_back_to_back: true, eligible_color_single: true, eligible_color_back_to_back: true },
+      { id: 'a5', name: 'A5', is_active: true, bw_price: 1.5, color_price: 8.0, is_special: false, eligible_bw_single: true, eligible_bw_back_to_back: true, eligible_color_single: true, eligible_color_back_to_back: true },
+      { id: 'bond', name: 'Bond Paper', is_active: true, bw_price: 4.0, color_price: 12.0, is_special: true, eligible_bw_single: true, eligible_bw_back_to_back: true, eligible_color_single: true, eligible_color_back_to_back: true },
+      { id: 'glossy', name: 'Glossy Photo', is_active: true, bw_price: 15.0, color_price: 25.0, is_special: true, eligible_bw_single: true, eligible_bw_back_to_back: true, eligible_color_single: true, eligible_color_back_to_back: true },
+      { id: 'envelope', name: 'Envelope', is_active: false, bw_price: 5.0, color_price: 15.0, is_special: true, eligible_bw_single: true, eligible_bw_back_to_back: true, eligible_color_single: true, eligible_color_back_to_back: true },
     ];
     await this.saveDynamicPaperTypes(shopId, defaultTypes);
     return defaultTypes;

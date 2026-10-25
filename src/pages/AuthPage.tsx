@@ -420,7 +420,7 @@ export const AuthPage: React.FC = () => {
                   <div className="space-y-1 mb-1">
                     <h2 className="text-xl font-bold tracking-tight text-foreground uppercase">Shop Registration</h2>
                     <p className="text-xs text-muted-foreground">
-                      Initialize your shop profile, PC terminal, and default pricing matrix.
+                      Set up your shop profile and pricing. Register PC terminals manually after signup.
                     </p>
                   </div>
 

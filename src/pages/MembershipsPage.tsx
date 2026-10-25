@@ -1,31 +1,31 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { useShopkeeper } from '@/contexts/ShopkeeperContext';
-import { shopkeeperApi } from '@/services/shopkeeperApi';
-import type { UserMembership, ShopPricing } from '@/types/shopkeeper';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
-import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import {
-  Users,
-  UserCheck,
-  UserX,
-  CreditCard,
-  Percent,
   Calendar,
-  Save,
-  Search,
-  Crown,
   ChevronLeft,
   ChevronRight,
   Clock,
-  RefreshCw,
+  CreditCard,
+  Crown,
+  Percent,
   Power,
+  RefreshCw,
+  Save,
+  Search,
+  UserCheck,
+  Users,
+  UserX,
 } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useShopkeeper } from '@/contexts/ShopkeeperContext';
+import { shopkeeperApi } from '@/services/shopkeeperApi';
+import type { ShopPricing, UserMembership } from '@/types/shopkeeper';
 
 const ITEMS_PER_PAGE = 8;
 
@@ -93,6 +93,15 @@ export const MembershipsPage: React.FC = () => {
         ...(pricing || {
           id: `prc_${user.shop_id}`,
           shop_id: user.shop_id,
+          bw_pricing_mode: 'print',
+          color_pricing_mode: 'print',
+          eligible_bw_single: true,
+          eligible_bw_back_to_back: true,
+          eligible_color_single: true,
+          eligible_color_back_to_back: true,
+          short_page_limit: 0,
+          bw_short_page_rate: 0,
+          color_short_page_rate: 0,
           bw_single: 1.0,
           bw_double: 1.5,
           bw_back_to_back: 1.5,

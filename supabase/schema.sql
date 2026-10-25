@@ -871,7 +871,16 @@ CREATE TABLE IF NOT EXISTS "public"."shop_pricing" (
     "dynamic_paper_types" "jsonb" DEFAULT '[]'::"jsonb",
     "urgent_surcharge" numeric DEFAULT 5.0,
     "binding_rate" numeric DEFAULT 30.0,
-    "lamination_rate" numeric DEFAULT 20.0
+    "lamination_rate" numeric DEFAULT 20.0,
+    "bw_pricing_mode" "text" DEFAULT 'print'::"text" NOT NULL,
+    "color_pricing_mode" "text" DEFAULT 'print'::"text" NOT NULL,
+    "eligible_bw_single" boolean DEFAULT true NOT NULL,
+    "eligible_bw_back_to_back" boolean DEFAULT true NOT NULL,
+    "eligible_color_single" boolean DEFAULT true NOT NULL,
+    "eligible_color_back_to_back" boolean DEFAULT true NOT NULL,
+    "short_page_limit" integer DEFAULT 0 NOT NULL,
+    "bw_short_page_rate" numeric DEFAULT 0 NOT NULL,
+    "color_short_page_rate" numeric DEFAULT 0 NOT NULL
 );
 
 
@@ -887,6 +896,10 @@ CREATE TABLE IF NOT EXISTS "public"."shop_dynamic_paper_types" (
     "bw_price" numeric DEFAULT 0 NOT NULL,
     "color_price" numeric DEFAULT 0 NOT NULL,
     "is_special" boolean DEFAULT false NOT NULL,
+    "eligible_bw_single" boolean DEFAULT true NOT NULL,
+    "eligible_bw_back_to_back" boolean DEFAULT true NOT NULL,
+    "eligible_color_single" boolean DEFAULT true NOT NULL,
+    "eligible_color_back_to_back" boolean DEFAULT true NOT NULL,
     "created_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     "updated_at" timestamp with time zone DEFAULT "now"() NOT NULL,
     CONSTRAINT "shop_dynamic_paper_types_bw_price_check" CHECK ("bw_price" >= 0),

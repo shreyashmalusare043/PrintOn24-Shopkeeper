@@ -1,37 +1,38 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { useShopkeeper } from '@/contexts/ShopkeeperContext';
-import { shopkeeperApi } from '@/services/shopkeeperApi';
-import type { ShopPrinter, ShopPricing, DynamicPaperType } from '@/types/shopkeeper';
+import {
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle2,
+  ExternalLink,
+  FileText,
+  Layers,
+  Monitor,
+  Printer,
+  RotateCw,
+  ShieldCheck,
+  Sparkles,
+  Upload,
+  Usb,
+  Wifi,
+  Zap,
+} from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogDescription,
 } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
+import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
-import { toast } from 'sonner';
-import {
-  Printer,
-  Monitor,
-  FileText,
-  Upload,
-  CheckCircle2,
-  AlertTriangle,
-  RotateCw,
-  Zap,
-  Sparkles,
-  Layers,
-  ArrowRight,
-  ShieldCheck,
-  Usb,
-  Wifi,
-  ExternalLink,
-} from 'lucide-react';
+import { useShopkeeper } from '@/contexts/ShopkeeperContext';
+import { shopkeeperApi } from '@/services/shopkeeperApi';
+import type { DynamicPaperType, ShopPricing, ShopPrinter } from '@/types/shopkeeper';
+import { getBillablePrintUnits, getShortDocumentRate, isPrintModeEligible } from '@/utils/printPricing';
 
 export const GoForPrintModal: React.FC = () => {
   const {
@@ -60,7 +61,7 @@ export const GoForPrintModal: React.FC = () => {
   const [colorMode, setColorMode] = useState<'B&W' | 'Color'>('B&W');
   const [duplex, setDuplex] = useState<'Single Side' | 'Back-to-Back'>('Single Side');
   const [paperSize, setPaperSize] = useState<string>('A4');
-  const [paperType, setPaperType] = useState<'Standard 75 GSM' | 'Bond Paper' | 'Glossy' | 'Executive'>('Standard 75 GSM');
+  const [paperType, setPaperType] = useState<string>('Standard 75 GSM');
   const [pageRange, setPageRange] = useState<string>('All');
 
   // Pricing State
@@ -137,8 +138,105 @@ export const GoForPrintModal: React.FC = () => {
     return pcs.find((p) => p.id === selectedPcId) || pcs[0] || null;
   }, [pcs, selectedPcId]);
 
+  const selectedDynamicPaper = useMemo(
+    () =>
+      dynamicPaperTypes.find(
+        (paper) =>
+          paper.is_active !== false &&
+          (paper.name.toLowerCase() === paperSize.toLowerCase() ||
+            paper.id.toLowerCase() === paperSize.toLowerCase() ||
+            paper.name.toLowerCase() === paperType.toLowerCase())
+      ),
+    [dynamicPaperTypes, paperSize, paperType]
+  );
+
+  const selectedDynamicMedia = useMemo(
+    () =>
+      dynamicPaperTypes.find(
+        (paper) => paper.is_active !== false && paper.name.toLowerCase() === paperType.toLowerCase()
+      ),
+    [dynamicPaperTypes, paperType]
+  );
+
+  const isOptionEligible = (
+    isColor: boolean,
+    isDuplex: boolean,
+    paper = selectedDynamicPaper,
+    media = selectedDynamicMedia
+  ) =>
+    !pricing ||
+    (isPrintModeEligible(pricing, paper, isColor, isDuplex) &&
+      isPrintModeEligible(pricing, media, isColor, isDuplex));
+
+  const canSelectColorMode = (isColor: boolean, paper = selectedDynamicPaper) =>
+    isOptionEligible(isColor, false, paper) || isOptionEligible(isColor, true, paper);
+
+  const handleColorModeChange = (nextMode: 'B&W' | 'Color') => {
+    const isColor = nextMode === 'Color';
+    if (isOptionEligible(isColor, duplex === 'Back-to-Back')) {
+      setColorMode(nextMode);
+    } else if (isOptionEligible(isColor, false)) {
+      setColorMode(nextMode);
+      setDuplex('Single Side');
+    } else if (isOptionEligible(isColor, true)) {
+      setColorMode(nextMode);
+      setDuplex('Back-to-Back');
+    }
+  };
+
+  const handlePaperSizeChange = (nextSize: string) => {
+    const nextPaper = dynamicPaperTypes.find((paper) => paper.name === nextSize);
+    setPaperSize(nextSize);
+    if (!isOptionEligible(colorMode === 'Color', duplex === 'Back-to-Back', nextPaper, selectedDynamicMedia)) {
+      if (isOptionEligible(colorMode === 'Color', false, nextPaper, selectedDynamicMedia)) {
+        setDuplex('Single Side');
+      } else if (isOptionEligible(colorMode === 'Color', true, nextPaper, selectedDynamicMedia)) {
+        setDuplex('Back-to-Back');
+      }
+    }
+  };
+
+  const handlePaperTypeChange = (nextType: string) => {
+    const nextPaper = dynamicPaperTypes.find((paper) => paper.name === nextType);
+    setPaperType(nextType);
+    if (!isOptionEligible(colorMode === 'Color', duplex === 'Back-to-Back', selectedDynamicPaper, nextPaper)) {
+      if (isOptionEligible(colorMode === 'Color', false, selectedDynamicPaper, nextPaper)) {
+        setDuplex('Single Side');
+      } else if (isOptionEligible(colorMode === 'Color', true, selectedDynamicPaper, nextPaper)) {
+        setDuplex('Back-to-Back');
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!pricing || isOptionEligible(colorMode === 'Color', duplex === 'Back-to-Back')) return;
+
+    for (const isColor of [colorMode === 'Color', colorMode !== 'Color']) {
+      for (const isDuplex of [false, true]) {
+        if (isOptionEligible(isColor, isDuplex)) {
+          setColorMode(isColor ? 'Color' : 'B&W');
+          setDuplex(isDuplex ? 'Back-to-Back' : 'Single Side');
+          return;
+        }
+      }
+    }
+  }, [pricing, selectedDynamicPaper, selectedDynamicMedia, colorMode, duplex]);
+
   // Dynamic Price Calculation
   const totalPrice = useMemo(() => {
+    const isDuplex = duplex === 'Back-to-Back';
+    const pricingMode =
+      colorMode === 'Color' ? pricing?.color_pricing_mode || 'print' : pricing?.bw_pricing_mode || 'print';
+    const billableUnits = getBillablePrintUnits(pageCount, copies, isDuplex, pricingMode);
+    const isColor = colorMode === 'Color';
+    const standardBaseRate = isColor
+      ? isDuplex
+        ? Number(pricing?.color_back_to_back || 8)
+        : Number(pricing?.color_single || 5)
+      : isDuplex
+        ? Number(pricing?.bw_back_to_back || 1.5)
+        : Number(pricing?.bw_single || 1);
+
     // Check if matched in dynamic paper types
     const matchedDynamic = dynamicPaperTypes.find(
       (pt) =>
@@ -147,30 +245,34 @@ export const GoForPrintModal: React.FC = () => {
           pt.id.toLowerCase() === paperType.toLowerCase() ||
           pt.name.toLowerCase() === paperSize.toLowerCase())
     );
-    if (matchedDynamic) {
-      const dynamicRate = colorMode === 'Color' ? Number(matchedDynamic.color_price) : Number(matchedDynamic.bw_price);
-      if (dynamicRate > 0) {
-        return dynamicRate * pageCount * copies;
-      }
-    }
-
+    let standardRate = standardBaseRate;
     if (!pricing) {
-      const base = colorMode === 'Color' ? 10 : 2;
-      return base * pageCount * copies;
-    }
-
-    let rate = 0;
-    if (colorMode === 'Color') {
-      rate = duplex === 'Back-to-Back' ? (pricing.color_back_to_back || 8) : (pricing.color_single || 5);
+      standardRate = isColor ? 10 : 2;
+    } else if (matchedDynamic) {
+      const dynamicRate = isColor ? Number(matchedDynamic.color_price) : Number(matchedDynamic.bw_price);
+      if (dynamicRate > 0) standardRate = dynamicRate;
     } else {
-      rate = duplex === 'Back-to-Back' ? (pricing.bw_back_to_back || 1.5) : (pricing.bw_single || 1);
+      if (paperSize === 'A3') {
+        standardRate += Math.max(0, (Number(pricing.a3_rate) || 4) - (Number(pricing.a4_rate) || 1));
+      }
+      if (paperType === 'Bond Paper') standardRate += (pricing.bond_paper_rate ?? pricing.bond_rate ?? 2);
+      if (paperType === 'Glossy') standardRate += (pricing.glossy_paper_rate ?? pricing.glossy_rate ?? 5);
     }
 
-    if (paperSize === 'A3') rate += Math.max(0, (Number(pricing.a3_rate) || 4) - (Number(pricing.a4_rate) || 1));
-    if (paperType === 'Bond Paper') rate += (pricing.bond_paper_rate ?? pricing.bond_rate ?? 2);
-    if (paperType === 'Glossy') rate += (pricing.glossy_paper_rate ?? pricing.glossy_rate ?? 5);
-
-    return rate * pageCount * copies;
+    const shortPageRate = pricing
+      ? getShortDocumentRate(
+          pageCount,
+          pricing.short_page_limit,
+          isColor ? pricing.color_short_page_rate : pricing.bw_short_page_rate
+        )
+      : undefined;
+    const rate = Math.max(
+      0.5,
+      shortPageRate === undefined
+        ? standardRate
+        : shortPageRate + Math.max(0, standardRate - standardBaseRate)
+    );
+    return rate * billableUnits;
   }, [pricing, dynamicPaperTypes, colorMode, duplex, paperSize, paperType, pageCount, copies]);
 
   // Handle local file selection
@@ -408,7 +510,8 @@ export const GoForPrintModal: React.FC = () => {
                 <div className="grid grid-cols-2 gap-1 p-0.5 bg-muted rounded-lg border border-border">
                   <button
                     type="button"
-                    onClick={() => setColorMode('B&W')}
+                    onClick={() => handleColorModeChange('B&W')}
+                    disabled={!canSelectColorMode(false)}
                     className={`py-1 text-xs font-medium rounded-md transition-all ${
                       colorMode === 'B&W' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'
                     }`}
@@ -417,7 +520,8 @@ export const GoForPrintModal: React.FC = () => {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setColorMode('Color')}
+                    onClick={() => handleColorModeChange('Color')}
+                    disabled={!canSelectColorMode(true)}
                     className={`py-1 text-xs font-medium rounded-md transition-all ${
                       colorMode === 'Color' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground'
                     }`}
@@ -432,11 +536,11 @@ export const GoForPrintModal: React.FC = () => {
                 <Label className="text-[11px] font-semibold text-muted-foreground uppercase">Sides</Label>
                 <select
                   value={duplex}
-                  onChange={(e) => setDuplex(e.target.value as any)}
+                  onChange={(e) => setDuplex(e.target.value as 'Single Side' | 'Back-to-Back')}
                   className="w-full bg-card border border-border text-xs px-2.5 py-1.5 rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                 >
-                  <option value="Single Side">Single Side</option>
-                  <option value="Back-to-Back">Back-to-Back</option>
+                  <option value="Single Side" disabled={!isOptionEligible(colorMode === 'Color', false)}>Single Side</option>
+                  <option value="Back-to-Back" disabled={!isOptionEligible(colorMode === 'Color', true)}>Back-to-Back</option>
                 </select>
               </div>
 
@@ -445,14 +549,21 @@ export const GoForPrintModal: React.FC = () => {
                 <Label className="text-[11px] font-semibold text-muted-foreground uppercase">Paper Size</Label>
                 <select
                   value={paperSize}
-                  onChange={(e) => setPaperSize(e.target.value as any)}
+                  onChange={(e) => handlePaperSizeChange(e.target.value)}
                   className="w-full bg-card border border-border text-xs px-2.5 py-1.5 rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                 >
                   {dynamicPaperTypes && dynamicPaperTypes.length > 0 ? (
                     dynamicPaperTypes
                       .filter((pt) => pt.is_active !== false)
                       .map((pt) => (
-                        <option key={pt.id} value={pt.name}>
+                        <option
+                          key={pt.id}
+                          value={pt.name}
+                          disabled={
+                            !isOptionEligible(colorMode === 'Color', false, pt) &&
+                            !isOptionEligible(colorMode === 'Color', true, pt)
+                          }
+                        >
                           {pt.name} (₹{colorMode === 'Color' ? pt.color_price : pt.bw_price}/pg)
                         </option>
                       ))
@@ -487,14 +598,21 @@ export const GoForPrintModal: React.FC = () => {
                 <Label className="text-[11px] font-semibold text-muted-foreground uppercase">Paper Media Type</Label>
                 <select
                   value={paperType}
-                  onChange={(e) => setPaperType(e.target.value as any)}
+                  onChange={(e) => handlePaperTypeChange(e.target.value)}
                   className="w-full bg-card border border-border text-xs px-3 py-2 rounded-lg text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
                 >
                   {dynamicPaperTypes && dynamicPaperTypes.length > 0 ? (
                     dynamicPaperTypes
                       .filter((pt) => pt.is_active !== false)
                       .map((pt) => (
-                        <option key={pt.id} value={pt.name}>
+                        <option
+                          key={pt.id}
+                          value={pt.name}
+                          disabled={
+                            !isOptionEligible(colorMode === 'Color', false, selectedDynamicPaper, pt) &&
+                            !isOptionEligible(colorMode === 'Color', true, selectedDynamicPaper, pt)
+                          }
+                        >
                           {pt.name} (₹{colorMode === 'Color' ? pt.color_price : pt.bw_price}/page)
                         </option>
                       ))
@@ -528,7 +646,16 @@ export const GoForPrintModal: React.FC = () => {
                   ₹{totalPrice.toFixed(2)}
                 </p>
                 <p className="text-[10px] text-muted-foreground font-mono">
-                  {pageCount} page(s) × {copies} cop(ies) • {colorMode} • {duplex}
+                  {pageCount} page(s) × {copies} cop(ies) • {colorMode} • {duplex} •{' '}
+                  {getBillablePrintUnits(
+                    pageCount,
+                    copies,
+                    duplex === 'Back-to-Back',
+                    colorMode === 'Color'
+                      ? pricing?.color_pricing_mode || 'print'
+                      : pricing?.bw_pricing_mode || 'print'
+                  )}{' '}
+                  billable unit(s)
                 </p>
               </div>
 

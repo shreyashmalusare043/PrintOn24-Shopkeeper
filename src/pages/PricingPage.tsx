@@ -31,6 +31,13 @@ import { Switch } from '@/components/ui/switch';
 import { useShopkeeper } from '@/contexts/ShopkeeperContext';
 import { shopkeeperApi } from '@/services/shopkeeperApi';
 import type { DynamicPaperType, ShopPricing } from '@/types/shopkeeper';
+import {
+  getBillablePrintUnits,
+  getBillablePrintUnitsForDocuments,
+  getDocumentPageCounts,
+  getShortDocumentRate,
+  isPrintModeEligible,
+} from '@/utils/printPricing';
 
 const DYNAMIC_PAPER_NAME_OPTIONS = [
   'A4',
@@ -45,6 +52,15 @@ const DYNAMIC_PAPER_NAME_OPTIONS = [
   'Envelope',
   'Executive',
 ];
+
+const PRINT_MODE_OPTIONS = [
+  { key: 'eligible_bw_single', label: 'B&W Single' },
+  { key: 'eligible_bw_back_to_back', label: 'B&W Back-to-Back' },
+  { key: 'eligible_color_single', label: 'Colour Single' },
+  { key: 'eligible_color_back_to_back', label: 'Colour Back-to-Back' },
+] as const;
+
+type PrintModeEligibilityKey = (typeof PRINT_MODE_OPTIONS)[number]['key'];
 
 export const PricingPage: React.FC = () => {
   const { user, t } = useShopkeeper();
@@ -75,10 +91,45 @@ export const PricingPage: React.FC = () => {
 
   // Live Cost Simulator state (GSM / Paper Quality removed as requested)
   const [calcPages, setCalcPages] = useState(10);
+  const [calcDocumentCount, setCalcDocumentCount] = useState(1);
   const [calcCopies, setCalcCopies] = useState(1);
   const [calcPrintType, setCalcPrintType] = useState<'bw' | 'color'>('bw');
   const [calcSides, setCalcSides] = useState<'single' | 'back_to_back'>('single');
   const [calcPaperSize, setCalcPaperSize] = useState<'a4' | 'a3'>('a4');
+
+  const getSimulatorPaper = (size: 'a4' | 'a3') =>
+    paperTypes.find((paper) => paper.name.toLowerCase() === size);
+
+  const isSimulatorOptionEligible = (
+    isColor: boolean,
+    isDuplex: boolean,
+    size: 'a4' | 'a3' = calcPaperSize
+  ) => {
+    const selectedPaper = getSimulatorPaper(size);
+    return !pricing || isPrintModeEligible(pricing, selectedPaper, isColor, isDuplex);
+  };
+
+  const canSimulateColorMode = (isColor: boolean, size: 'a4' | 'a3' = calcPaperSize) =>
+    isSimulatorOptionEligible(isColor, false, size) || isSimulatorOptionEligible(isColor, true, size);
+
+  useEffect(() => {
+    if (!pricing || isSimulatorOptionEligible(calcPrintType === 'color', calcSides === 'back_to_back')) return;
+
+    const options = [
+      [calcPrintType === 'color', calcSides !== 'back_to_back'],
+      [calcPrintType !== 'color', calcSides === 'back_to_back'],
+      [calcPrintType !== 'color', calcSides !== 'back_to_back'],
+      [calcPrintType === 'color', calcSides === 'back_to_back'],
+    ] as const;
+
+    for (const [isColor, isDuplex] of options) {
+      if (isSimulatorOptionEligible(isColor, isDuplex)) {
+        setCalcPrintType(isColor ? 'color' : 'bw');
+        setCalcSides(isDuplex ? 'back_to_back' : 'single');
+        return;
+      }
+    }
+  }, [pricing, paperTypes, calcPrintType, calcSides, calcPaperSize]);
 
   const fetchPricing = async () => {
     if (!user?.shop_id) return;
@@ -173,6 +224,10 @@ export const PricingPage: React.FC = () => {
           color_price: colP,
           is_special: paperIsSpecial,
           is_active: paperIsActive,
+          eligible_bw_single: true,
+          eligible_bw_back_to_back: true,
+          eligible_color_single: true,
+          eligible_color_back_to_back: true,
         },
       ];
     }
@@ -211,6 +266,46 @@ export const PricingPage: React.FC = () => {
       setSavingPaper(false);
     }
   };
+
+  const handleTogglePaperEligibility = async (
+    paper: DynamicPaperType,
+    key: PrintModeEligibilityKey,
+    eligible: boolean
+  ) => {
+    if (!user?.shop_id) return;
+    if (!eligible && PRINT_MODE_OPTIONS.every((option) => option.key === key || !paper[option.key])) {
+      toast.error('Keep at least one print mode eligible for this paper type.');
+      return;
+    }
+
+    const updated = paperTypes.map((item) =>
+      item.id === paper.id ? { ...item, [key]: eligible } : item
+    );
+    setSavingPaper(true);
+    try {
+      await shopkeeperApi.saveDynamicPaperTypes(user.shop_id, updated);
+      setPaperTypes(updated);
+      toast.success(`Print eligibility for ${paper.name} updated.`);
+    } catch (err) {
+      console.error('Failed to update paper print eligibility:', err);
+      toast.error(`Failed to update print eligibility: ${err instanceof Error ? err.message : 'Please try again.'}`);
+    } finally {
+      setSavingPaper(false);
+    }
+  };
+
+  const renderBaseRateEligibility = (key: PrintModeEligibilityKey) => (
+    <div className="flex items-center justify-between gap-2 border-t border-border/70 pt-2">
+      <span className="text-[10px] font-medium text-muted-foreground">Eligible for customers</span>
+      <Switch
+        checked={pricing?.[key] ?? true}
+        onCheckedChange={(checked) => {
+          if (pricing) setPricing({ ...pricing, [key]: checked });
+        }}
+        aria-label={`Toggle ${PRINT_MODE_OPTIONS.find((option) => option.key === key)?.label} eligibility`}
+      />
+    </div>
+  );
 
   const handleDeletePaper = async (paper: DynamicPaperType) => {
     if (paper.id === 'a4') {
@@ -273,6 +368,26 @@ export const PricingPage: React.FC = () => {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!pricing) return;
+    if (!Number.isInteger(pricing.short_page_limit) || pricing.short_page_limit < 0) {
+      toast.error('Enter a whole number of pages for the short-document limit.');
+      return;
+    }
+    if (
+      !pricing.eligible_bw_single &&
+      !pricing.eligible_bw_back_to_back &&
+      !pricing.eligible_color_single &&
+      !pricing.eligible_color_back_to_back
+    ) {
+      toast.error('At least one print mode must remain eligible.');
+      return;
+    }
+    if (
+      pricing.short_page_limit > 0 &&
+      (pricing.bw_short_page_rate < 0.5 || pricing.color_short_page_rate < 0.5)
+    ) {
+      toast.error('Set both short-document rates to at least ₹0.50 per billable page.');
+      return;
+    }
 
     setSaving(true);
     try {
@@ -302,8 +417,21 @@ export const PricingPage: React.FC = () => {
       paperSurcharge += (pricing.a3_rate || 5) - (pricing.a4_rate || 1);
     }
 
-    const ratePerPage = Math.max(0.5, baseRate + paperSurcharge);
-    return Math.round(ratePerPage * calcPages * calcCopies * 100) / 100;
+    const documentPageCounts = getDocumentPageCounts(
+      calcPages * calcDocumentCount,
+      Array.from({ length: calcDocumentCount }, () => calcPages)
+    );
+    const shortPageRate = calcPrintType === 'bw' ? pricing.bw_short_page_rate : pricing.color_short_page_rate;
+    const mode = calcPrintType === 'bw' ? pricing.bw_pricing_mode : pricing.color_pricing_mode;
+    const total = documentPageCounts.reduce((documentTotal, pages) => {
+      const documentShortRate = getShortDocumentRate(pages, pricing.short_page_limit, shortPageRate);
+      const ratePerPage = Math.max(0.5, (documentShortRate ?? baseRate) + paperSurcharge);
+      return (
+        documentTotal +
+        ratePerPage * getBillablePrintUnits(pages, calcCopies, calcSides === 'back_to_back', mode || 'print')
+      );
+    }, 0);
+    return Math.round(total * 100) / 100;
   };
 
   return (
@@ -389,6 +517,7 @@ export const PricingPage: React.FC = () => {
                       />
                     </div>
                     <p className="text-[10px] text-muted-foreground">Standard monochrome single page</p>
+                    {renderBaseRateEligibility('eligible_bw_single')}
                   </div>
 
                   {/* B&W Back-to-Back */}
@@ -416,6 +545,7 @@ export const PricingPage: React.FC = () => {
                       />
                     </div>
                     <p className="text-[10px] text-muted-foreground">Standard monochrome both sides</p>
+                    {renderBaseRateEligibility('eligible_bw_back_to_back')}
                   </div>
 
                   {/* Color Single Side */}
@@ -443,6 +573,7 @@ export const PricingPage: React.FC = () => {
                       />
                     </div>
                     <p className="text-[10px] text-muted-foreground">Full color presentation print</p>
+                    {renderBaseRateEligibility('eligible_color_single')}
                   </div>
 
                   {/* Color Back-to-Back */}
@@ -470,112 +601,169 @@ export const PricingPage: React.FC = () => {
                       />
                     </div>
                     <p className="text-[10px] text-muted-foreground">Double-sided full color print</p>
+                    {renderBaseRateEligibility('eligible_color_back_to_back')}
                   </div>
                 </div>
               </CardContent>
             </Card>
 
-            {/* 2. Paper Size & Specialty Media Types */}
+            {/* 2. Global print mode eligibility */}
             <Card className="bg-card border-border rounded-xl shadow-sm">
               <CardHeader className="pb-3 border-b border-border">
                 <CardTitle className="text-sm font-heading font-bold uppercase text-foreground">
-                  2. Paper Sizes &amp; Specialty Media Rates
+                  2. Print Mode Eligibility
                 </CardTitle>
                 <CardDescription className="text-xs text-muted-foreground font-sans">
-                  Standard sizes (A4, A3) and media surcharge rates.
+                  Turn off print options your shop does not offer. Paper-specific settings can further restrict these options.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="p-4 md:p-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {PRINT_MODE_OPTIONS.map(({ key, label }) => (
+                  <div key={key} className="flex items-center justify-between gap-3 p-3 bg-muted/40 border border-border rounded-lg">
+                    <Label htmlFor={`global-${key}`} className="text-xs font-semibold text-foreground">
+                      {label}
+                    </Label>
+                    <Switch
+                      id={`global-${key}`}
+                      checked={pricing[key]}
+                      onCheckedChange={(checked) => setPricing({ ...pricing, [key]: checked })}
+                    />
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+
+            {/* 3. Printing Price Calculation */}
+            <Card className="bg-card border-border rounded-xl shadow-sm">
+              <CardHeader className="pb-3 border-b border-border">
+                <CardTitle className="text-sm font-heading font-bold uppercase text-foreground">
+                  3. Printing Price Calculation
+                </CardTitle>
+                <CardDescription className="text-xs text-muted-foreground font-sans">
+                  Choose how duplex jobs are charged independently for B&amp;W and Colour.
                 </CardDescription>
               </CardHeader>
 
               <CardContent className="p-4 md:p-6 space-y-4">
+                {([
+                  {
+                    key: 'bw_pricing_mode',
+                    label: 'Black & White',
+                    description: 'Choose one calculation method for B&W orders.',
+                  },
+                  {
+                    key: 'color_pricing_mode',
+                    label: 'Colour',
+                    description: 'Choose one calculation method for Colour orders.',
+                  },
+                ] as const).map(({ key, label, description }) => (
+                  <div key={key} className="p-3 bg-muted/40 border border-border rounded-lg space-y-2">
+                    <div>
+                      <Label className="text-xs font-semibold text-foreground uppercase">{label}</Label>
+                      <p className="text-[10px] text-muted-foreground">{description}</p>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <Button
+                        type="button"
+                        variant={pricing[key] === 'page' ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => setPricing({ ...pricing, [key]: 'page' })}
+                        className={`h-auto min-h-9 whitespace-normal py-2 text-xs ${
+                          pricing[key] === 'page' ? 'bg-primary text-primary-foreground font-semibold' : ''
+                        }`}
+                      >
+                        Price According to Page
+                        <span className="block text-[10px] font-normal opacity-80">
+                          Duplex charges count physical sheets used.
+                        </span>
+                      </Button>
+                      <Button
+                        type="button"
+                        variant={pricing[key] === 'print' ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => setPricing({ ...pricing, [key]: 'print' })}
+                        className={`h-auto min-h-9 whitespace-normal py-2 text-xs ${
+                          pricing[key] === 'print' ? 'bg-primary text-primary-foreground font-semibold' : ''
+                        }`}
+                      >
+                        Price According to Print
+                        <span className="block text-[10px] font-normal opacity-80">
+                          Charges count every document page.
+                        </span>
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+
+            {/* 4. Short-document pricing */}
+            <Card className="bg-card border-border rounded-xl shadow-sm">
+              <CardHeader className="pb-3 border-b border-border">
+                <CardTitle className="text-sm font-heading font-bold uppercase text-foreground">
+                  4. Page Price Limitation
+                </CardTitle>
+                <CardDescription className="text-xs text-muted-foreground font-sans">
+                  Set a special per-page rate for short documents. The limit is checked separately for each document; documents above it use regular rates.
+                </CardDescription>
+              </CardHeader>
+
+              <CardContent className="p-4 md:p-6 space-y-4">
+                <div className="max-w-xs space-y-1.5">
+                  <Label className="text-xs font-semibold text-foreground uppercase">
+                    Short-document limit (pages)
+                  </Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    max="1000"
+                    step="1"
+                    value={pricing.short_page_limit}
+                    onChange={(e) =>
+                      setPricing({ ...pricing, short_page_limit: Number.parseInt(e.target.value, 10) || 0 })
+                    }
+                    className="text-sm font-mono font-bold rounded-lg"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Use 0 to disable. The special rate applies when an individual document is at or below this page limit.
+                  </p>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {/* A4 Paper Rate */}
-                  <div className="p-3 bg-muted/40 border border-border rounded-lg space-y-1.5">
-                    <Label className="text-xs font-semibold text-foreground uppercase">
-                      A4 Paper Base Rate
-                    </Label>
-                    <div className="relative">
-                      <span className="absolute left-3 top-2.5 text-xs text-muted-foreground font-mono">₹</span>
-                      <Input
-                        type="number"
-                        step="0.25"
-                        min="0"
-                        value={pricing.a4_rate}
-                        onChange={(e) => setPricing({ ...pricing, a4_rate: parseFloat(e.target.value) || 0 })}
-                        className="pl-7 text-sm font-mono font-bold rounded-lg"
-                      />
+                  {([
+                    { key: 'bw_short_page_rate', label: 'B&W short-document rate' },
+                    { key: 'color_short_page_rate', label: 'Colour short-document rate' },
+                  ] as const).map(({ key, label }) => (
+                    <div key={key} className="p-3 bg-muted/40 border border-border rounded-lg space-y-1.5">
+                      <Label className="text-xs font-semibold text-foreground uppercase">{label} (₹/page)</Label>
+                      <div className="relative">
+                        <span className="absolute left-3 top-2.5 text-xs text-muted-foreground font-mono">₹</span>
+                        <Input
+                          type="number"
+                          min={pricing.short_page_limit > 0 ? '0.5' : '0'}
+                          step="0.25"
+                          value={pricing[key]}
+                          onChange={(e) =>
+                            setPricing({ ...pricing, [key]: Number.parseFloat(e.target.value) || 0 })
+                          }
+                          className="pl-7 text-sm font-mono font-bold rounded-lg"
+                          required={pricing.short_page_limit > 0}
+                        />
+                      </div>
+                      <p className="text-[10px] text-muted-foreground">
+                        Applies separately to B&amp;W and Colour for each document within the limit.
+                      </p>
                     </div>
-                    <p className="text-[10px] text-muted-foreground">Included standard sheet cost</p>
-                  </div>
-
-                  {/* A3 Paper Rate */}
-                  <div className="p-3 bg-muted/40 border border-border rounded-lg space-y-1.5">
-                    <Label className="text-xs font-semibold text-foreground uppercase">
-                      A3 Large Format Rate
-                    </Label>
-                    <div className="relative">
-                      <span className="absolute left-3 top-2.5 text-xs text-muted-foreground font-mono">₹</span>
-                      <Input
-                        type="number"
-                        step="0.5"
-                        min="1"
-                        value={pricing.a3_rate}
-                        onChange={(e) => setPricing({ ...pricing, a3_rate: parseFloat(e.target.value) || 0 })}
-                        className="pl-7 text-sm font-mono font-bold rounded-lg"
-                      />
-                    </div>
-                    <p className="text-[10px] text-muted-foreground">Double size ledger sheets</p>
-                  </div>
-
-                  {/* Bond Paper Surcharge */}
-                  <div className="p-3 bg-muted/40 border border-border rounded-lg space-y-1.5">
-                    <Label className="text-xs font-semibold text-foreground uppercase">
-                      Executive Bond Paper (+₹)
-                    </Label>
-                    <div className="relative">
-                      <span className="absolute left-3 top-2.5 text-xs text-muted-foreground font-mono">₹</span>
-                      <Input
-                        type="number"
-                        step="0.5"
-                        min="0"
-                        value={pricing.bond_paper_rate}
-                        onChange={(e) =>
-                          setPricing({ ...pricing, bond_paper_rate: parseFloat(e.target.value) || 0 })
-                        }
-                        className="pl-7 text-sm font-mono font-bold rounded-lg"
-                      />
-                    </div>
-                    <p className="text-[10px] text-muted-foreground">Premium resume/letterhead stock</p>
-                  </div>
-
-                  {/* Glossy Photo Paper Surcharge */}
-                  <div className="p-3 bg-muted/40 border border-border rounded-lg space-y-1.5">
-                    <Label className="text-xs font-semibold text-foreground uppercase">
-                      Glossy Photo Paper (+₹)
-                    </Label>
-                    <div className="relative">
-                      <span className="absolute left-3 top-2.5 text-xs text-muted-foreground font-mono">₹</span>
-                      <Input
-                        type="number"
-                        step="1"
-                        min="0"
-                        value={pricing.glossy_paper_rate}
-                        onChange={(e) =>
-                          setPricing({ ...pricing, glossy_paper_rate: parseFloat(e.target.value) || 0 })
-                        }
-                        className="pl-7 text-sm font-mono font-bold rounded-lg"
-                      />
-                    </div>
-                    <p className="text-[10px] text-muted-foreground">High resolution photo media</p>
-                  </div>
+                  ))}
                 </div>
               </CardContent>
             </Card>
 
-            {/* 3. Finishing & Add-ons Services */}
+            {/* 5. Finishing & Add-ons Services */}
             <Card className="bg-card border-border rounded-xl shadow-sm">
               <CardHeader className="pb-3 border-b border-border">
                 <CardTitle className="text-sm font-heading font-bold uppercase text-foreground">
-                  3. Post-Processing &amp; Finishing Services
+                  5. Post-Processing &amp; Finishing Services
                 </CardTitle>
                 <CardDescription className="text-xs text-muted-foreground font-sans">
                   Spiral binding, lamination, and express handling charges.
@@ -644,13 +832,13 @@ export const PricingPage: React.FC = () => {
               </CardContent>
             </Card>
 
-            {/* 4. Dynamic Paper Types & Media Matrix (Item 14) */}
+            {/* 6. Dynamic Paper Types & Media Matrix (Item 14) */}
             <Card className="bg-card border-border rounded-xl shadow-sm">
-              <CardHeader className="pb-3 border-b border-border flex flex-row items-center justify-between">
-                <div>
+              <CardHeader className="flex flex-col gap-3 border-b border-border pb-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0 flex-1">
                   <CardTitle className="text-sm font-heading font-bold uppercase text-foreground flex items-center gap-2">
                     <Layers className="w-4 h-4 text-primary" />
-                    <span>4. Dynamic Paper Types &amp; Sizes</span>
+                    <span>6. Dynamic Paper Types &amp; Sizes</span>
                   </CardTitle>
                   <CardDescription className="text-xs text-muted-foreground font-sans">
                     Configure custom paper sizes (A4, A3, A5, Bond, Glossy, Envelope, Jumbo) with individual B&amp;W and Color pricing.
@@ -660,109 +848,116 @@ export const PricingPage: React.FC = () => {
                   type="button"
                   size="sm"
                   onClick={handleOpenAddPaper}
-                  className="text-xs font-semibold h-8 rounded-lg bg-primary text-primary-foreground gap-1.5"
+                  className="h-9 shrink-0 gap-1.5 self-start rounded-lg bg-primary text-xs font-semibold text-primary-foreground sm:ml-4 sm:self-auto"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Add Paper Type</span>
                 </Button>
               </CardHeader>
 
-              <CardContent className="p-0">
-                <div className="w-full max-w-full overflow-x-auto bg-card">
-                  <table className="w-full text-xs font-mono">
-                    <thead className="bg-muted/50 border-b border-border text-muted-foreground uppercase text-[11px]">
-                      <tr>
-                        <th className="py-2.5 px-4 text-left whitespace-nowrap">Paper Size / Type</th>
-                        <th className="py-2.5 px-4 text-left whitespace-nowrap">Category</th>
-                        <th className="py-2.5 px-4 text-right whitespace-nowrap">B&amp;W Rate (₹)</th>
-                        <th className="py-2.5 px-4 text-right whitespace-nowrap">Colour Rate (₹)</th>
-                        <th className="py-2.5 px-4 text-center whitespace-nowrap">Availability</th>
-                        <th className="py-2.5 px-4 text-right whitespace-nowrap">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {paperTypes.map((pt) => (
-                        <tr key={pt.id} className="hover:bg-muted/30 transition-colors">
-                          <td className="py-3 px-4 font-bold text-foreground whitespace-nowrap">
-                            <div className="flex items-center gap-2">
-                              <span>{pt.name}</span>
-                              {pt.id === 'a4' && (
-                                <Badge variant="outline" className="text-[10px] py-0 px-1.5">
-                                  Default
-                                </Badge>
-                              )}
-                            </div>
-                          </td>
-                          <td className="py-3 px-4 whitespace-nowrap">
-                            {pt.is_special ? (
-                              <Badge className="bg-primary/10 text-primary border-primary/30 text-[10px]">
-                                Special Paper
-                              </Badge>
-                            ) : (
-                              <Badge variant="outline" className="text-[10px] text-muted-foreground">
-                                Normal Paper
-                              </Badge>
-                            )}
-                          </td>
-                          <td className="py-3 px-4 text-right font-bold text-foreground whitespace-nowrap">
-                            ₹{Number(pt.bw_price).toFixed(2)}
-                          </td>
-                          <td className="py-3 px-4 text-right font-bold text-primary whitespace-nowrap">
-                            ₹{Number(pt.color_price).toFixed(2)}
-                          </td>
-                          <td className="py-3 px-4 text-center whitespace-nowrap">
-                            {pt.id === 'a4' ? (
-                              <span className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
-                                Always Active
-                              </span>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => handleTogglePaperActive(pt.id, pt.is_active)}
-                                disabled={savingPaper}
-                                className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border transition-colors ${
-                                  pt.is_active
-                                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
-                                    : 'bg-muted text-muted-foreground border-border'
-                                }`}
-                              >
-                                {pt.is_active ? 'Active' : 'Deactivated'}
-                              </button>
-                            )}
-                          </td>
-                          <td className="py-3 px-4 text-right whitespace-nowrap">
-                            <div className="flex items-center justify-end gap-1">
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => handleOpenEditPaper(pt)}
-                                disabled={savingPaper}
-                                className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground"
-                                title="Edit paper type"
-                              >
-                                <Edit3 className="w-3.5 h-3.5" />
-                              </Button>
-                              {pt.id !== 'a4' && (
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => handleDeletePaper(pt)}
-                                  disabled={savingPaper}
-                                  className="h-7 w-7 p-0 text-red-500/70 hover:text-red-500 hover:bg-red-500/10"
-                                  title="Delete paper type"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </Button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+              <CardContent className="space-y-3 p-4">
+                {paperTypes.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-border px-4 py-10 text-center">
+                    <p className="text-sm font-semibold text-foreground">No paper types configured</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Add a paper size or media type to configure its rates and print options.
+                    </p>
+                  </div>
+                ) : (
+                  paperTypes.map((pt) => (
+                    <section key={pt.id} className="overflow-hidden rounded-xl border border-border bg-card">
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-muted/30 px-4 py-3">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <h3 className="text-sm font-bold text-foreground">{pt.name}</h3>
+                          {pt.id === 'a4' && (
+                            <Badge variant="outline" className="px-1.5 py-0 text-[9px]">Default</Badge>
+                          )}
+                          {pt.is_special ? (
+                            <Badge className="border-primary/30 bg-primary/10 text-primary text-[10px]">
+                              Special Paper
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                              Normal Paper
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {pt.id === 'a4' ? (
+                            <span className="mr-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                              Always Active
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleTogglePaperActive(pt.id, pt.is_active)}
+                              disabled={savingPaper}
+                              className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition-colors ${
+                                pt.is_active
+                                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                                  : 'border-border bg-muted text-muted-foreground'
+                              }`}
+                            >
+                              {pt.is_active ? 'Active' : 'Deactivated'}
+                            </button>
+                          )}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleOpenEditPaper(pt)}
+                            disabled={savingPaper}
+                            className="h-8 w-8 rounded-lg p-0 text-muted-foreground hover:text-foreground"
+                            title="Edit paper type"
+                          >
+                            <Edit3 className="h-3.5 w-3.5" />
+                          </Button>
+                          {pt.id !== 'a4' && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDeletePaper(pt)}
+                              disabled={savingPaper}
+                              className="h-8 w-8 rounded-lg p-0 text-red-500/70 hover:bg-red-500/10 hover:text-red-500"
+                              title="Delete paper type"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4">
+                        <div className="rounded-lg border border-border bg-muted/20 p-3">
+                          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">B&amp;W rate</p>
+                          <p className="mt-1 font-mono text-sm font-bold text-foreground">₹{Number(pt.bw_price).toFixed(2)}</p>
+                        </div>
+                        <div className="rounded-lg border border-border bg-muted/20 p-3">
+                          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Colour rate</p>
+                          <p className="mt-1 font-mono text-sm font-bold text-primary">₹{Number(pt.color_price).toFixed(2)}</p>
+                        </div>
+                        {PRINT_MODE_OPTIONS.map(({ key, label }) => (
+                          <label
+                            key={key}
+                            className={`flex min-h-12 items-center justify-between gap-2 rounded-lg border border-border px-3 py-2 text-[10px] font-medium ${
+                              !pt.is_active ? 'opacity-50' : 'text-foreground'
+                            }`}
+                          >
+                            <span>{label}</span>
+                            <Switch
+                              className="h-[18px] w-8 shrink-0 [&>span]:h-3.5 [&>span]:w-3.5 data-[state=checked]:[&>span]:translate-x-3"
+                              checked={pt[key] !== false}
+                              onCheckedChange={(checked) => handleTogglePaperEligibility(pt, key, checked)}
+                              disabled={savingPaper || !pt.is_active}
+                              aria-label={`${label} eligibility for ${pt.name}`}
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </section>
+                  ))
+                )}
               </CardContent>
             </Card>
           </div>
@@ -777,7 +972,7 @@ export const PricingPage: React.FC = () => {
                   <span>Live Rate Simulator</span>
                 </CardTitle>
                 <CardDescription className="text-xs text-muted-foreground font-sans">
-                  Simulates user portal invoice calculations instantly.
+                  Simulates the selected B&amp;W or Colour calculation method.
                 </CardDescription>
               </CardHeader>
 
@@ -796,6 +991,24 @@ export const PricingPage: React.FC = () => {
                     onChange={(e) => setCalcPages(parseInt(e.target.value) || 1)}
                     className="h-9 text-xs font-mono rounded-lg"
                   />
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex justify-between">
+                    <Label className="text-xs font-semibold uppercase">Number of Documents:</Label>
+                    <strong className="text-foreground font-mono">{calcDocumentCount}</strong>
+                  </div>
+                  <Input
+                    type="number"
+                    min="1"
+                    max="50"
+                    value={calcDocumentCount}
+                    onChange={(e) => setCalcDocumentCount(Math.max(1, Math.min(50, parseInt(e.target.value, 10) || 1)))}
+                    className="h-9 text-xs font-mono rounded-lg"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    The page limit is evaluated for each document separately.
+                  </p>
                 </div>
 
                 {/* Copies */}
@@ -822,7 +1035,15 @@ export const PricingPage: React.FC = () => {
                       type="button"
                       variant={calcPrintType === 'bw' ? 'default' : 'outline'}
                       size="sm"
-                      onClick={() => setCalcPrintType('bw')}
+                      onClick={() => {
+                        setCalcPrintType('bw');
+                        if (!isSimulatorOptionEligible(false, calcSides === 'back_to_back')) {
+                          setCalcSides(
+                            isSimulatorOptionEligible(false, false) ? 'single' : 'back_to_back'
+                          );
+                        }
+                      }}
+                      disabled={!canSimulateColorMode(false)}
                       className={`h-8 text-xs rounded-lg gap-1.5 ${calcPrintType === 'bw' ? 'bg-primary text-primary-foreground font-semibold' : ''}`}
                     >
                       <Circle className="w-3 h-3" />
@@ -832,7 +1053,15 @@ export const PricingPage: React.FC = () => {
                       type="button"
                       variant={calcPrintType === 'color' ? 'default' : 'outline'}
                       size="sm"
-                      onClick={() => setCalcPrintType('color')}
+                      onClick={() => {
+                        setCalcPrintType('color');
+                        if (!isSimulatorOptionEligible(true, calcSides === 'back_to_back')) {
+                          setCalcSides(
+                            isSimulatorOptionEligible(true, false) ? 'single' : 'back_to_back'
+                          );
+                        }
+                      }}
+                      disabled={!canSimulateColorMode(true)}
                       className={`h-8 text-xs rounded-lg gap-1.5 ${calcPrintType === 'color' ? 'bg-primary text-primary-foreground font-semibold' : ''}`}
                     >
                       <Palette className="w-3 h-3" />
@@ -850,6 +1079,7 @@ export const PricingPage: React.FC = () => {
                       variant={calcSides === 'single' ? 'default' : 'outline'}
                       size="sm"
                       onClick={() => setCalcSides('single')}
+                      disabled={!isSimulatorOptionEligible(calcPrintType === 'color', false)}
                       className={`h-8 text-xs rounded-lg ${calcSides === 'single' ? 'bg-primary text-primary-foreground font-semibold' : ''}`}
                     >
                       Single Side
@@ -859,6 +1089,7 @@ export const PricingPage: React.FC = () => {
                       variant={calcSides === 'back_to_back' ? 'default' : 'outline'}
                       size="sm"
                       onClick={() => setCalcSides('back_to_back')}
+                      disabled={!isSimulatorOptionEligible(calcPrintType === 'color', true)}
                       className={`h-8 text-xs rounded-lg ${calcSides === 'back_to_back' ? 'bg-primary text-primary-foreground font-semibold' : ''}`}
                     >
                       Back-to-Back
@@ -875,6 +1106,7 @@ export const PricingPage: React.FC = () => {
                       variant={calcPaperSize === 'a4' ? 'default' : 'outline'}
                       size="sm"
                       onClick={() => setCalcPaperSize('a4')}
+                      disabled={!canSimulateColorMode(calcPrintType === 'color', 'a4')}
                       className={`h-8 text-xs rounded-lg ${calcPaperSize === 'a4' ? 'bg-primary text-primary-foreground font-semibold' : ''}`}
                     >
                       A4 Standard
@@ -884,6 +1116,7 @@ export const PricingPage: React.FC = () => {
                       variant={calcPaperSize === 'a3' ? 'default' : 'outline'}
                       size="sm"
                       onClick={() => setCalcPaperSize('a3')}
+                      disabled={!canSimulateColorMode(calcPrintType === 'color', 'a3')}
                       className={`h-8 text-xs rounded-lg ${calcPaperSize === 'a3' ? 'bg-primary text-primary-foreground font-semibold' : ''}`}
                     >
                       A3 Large
@@ -900,7 +1133,19 @@ export const PricingPage: React.FC = () => {
                     ₹{calculateEstimate()}
                   </div>
                   <p className="text-[10px] text-muted-foreground font-sans">
-                    ({calcPages * calcCopies} printed impressions)
+                    {getBillablePrintUnitsForDocuments(
+                      getDocumentPageCounts(
+                        calcPages * calcDocumentCount,
+                        Array.from({ length: calcDocumentCount }, () => calcPages)
+                      ),
+                      calcCopies,
+                      calcSides === 'back_to_back',
+                      (calcPrintType === 'bw' ? pricing.bw_pricing_mode : pricing.color_pricing_mode) || 'print'
+                    )}{' '}
+                    billable {calcSides === 'back_to_back' &&
+                    (calcPrintType === 'bw' ? pricing.bw_pricing_mode : pricing.color_pricing_mode) === 'page'
+                      ? 'sheets'
+                      : 'pages'}
                   </p>
                 </div>
               </CardContent>
