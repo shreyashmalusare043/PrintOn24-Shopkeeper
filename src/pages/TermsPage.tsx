@@ -22,7 +22,7 @@ export const TermsPage: React.FC = () => {
     accepted_at?: string;
   }>({ accepted: false });
 
-  const activeVersion = terms[0]?.version || 'v2.6';
+  const activeVersion = terms[0]?.version || 'v1.0.0';
 
   const loadData = async () => {
     setLoading(true);
@@ -30,7 +30,7 @@ export const TermsPage: React.FC = () => {
       const data = await shopkeeperApi.getTerms();
       setTerms(data);
 
-      const termsVer = data[0]?.version || 'v2.6';
+      const termsVer = data[0]?.version || 'v1.0.0';
       if (user?.shop_id) {
         const consent = await shopkeeperApi.getConsentStatus(user.shop_id, 'terms', termsVer);
         setConsentStatus(consent);
@@ -134,7 +134,7 @@ export const TermsPage: React.FC = () => {
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant="outline" className="text-[11px] font-mono rounded-md">
-                    Version: {item.version || 'v2.6'}
+                    Version: {item.version || 'v1.0.0'}
                   </Badge>
                   {item.published_at && (
                     <span className="text-[11px] text-muted-foreground font-mono">

@@ -4039,7 +4039,7 @@ export const shopkeeperApi = {
         .order('published_at', { ascending: false });
 
       if (!error && data && data.length > 0) {
-        return data;
+        return data.map((policy) => ({ ...policy, version: 'v1.0.0' }));
       }
     } catch {}
 
@@ -4047,7 +4047,7 @@ export const shopkeeperApi = {
       {
         id: 'pol-01',
         title: 'Document Confidentiality & Auto-Destruction Policy',
-        version: 'v2.6',
+        version: 'v1.0.0',
         published_at: '2026-01-15',
         effective_date: '2026-02-01',
         content: `1. Principle of Temporary Retention:
@@ -4065,7 +4065,7 @@ Unauthorized retention or leakage of customer printing records constitutes a mat
       {
         id: 'pol-02',
         title: 'Weekly Payment Settlement & Payout Policy',
-        version: 'v2.6',
+        version: 'v1.0.0',
         published_at: '2026-03-01',
         effective_date: '2026-03-15',
         content: `1. Payment Collection:
@@ -4089,7 +4089,7 @@ Cash collected at the shop counter belongs 100% directly to the shopkeeper and i
         .order('published_at', { ascending: false });
 
       if (!error && data && data.length > 0) {
-        return data;
+        return data.map((term) => ({ ...term, version: 'v1.0.0' }));
       }
     } catch {}
 
@@ -4097,7 +4097,7 @@ Cash collected at the shop counter belongs 100% directly to the shopkeeper and i
       {
         id: 'term-01',
         title: 'Platform Service Level Agreement (SLA) & Merchant Terms',
-        version: 'v2.6',
+        version: 'v1.0.0',
         published_at: '2026-01-01',
         effective_date: '2026-01-01',
         content: `1. Acceptance of Terms:
