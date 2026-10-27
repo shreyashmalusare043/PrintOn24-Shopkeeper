@@ -64,7 +64,7 @@ export const PublicPricingPage: React.FC = () => {
             features: [
               'Up to 2 PC Terminals',
               'Standard Web Dashboard',
-              'Razorpay Online Payments',
+              'PayU Online Payments',
               'QR Code Ordering',
               'Email Support',
             ],

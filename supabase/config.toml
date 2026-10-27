@@ -3,3 +3,6 @@ verify_jwt = false
 
 [functions.qz-sign]
 verify_jwt = false
+
+[functions.payu-payment]
+verify_jwt = false

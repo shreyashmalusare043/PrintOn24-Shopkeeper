@@ -98,7 +98,7 @@ export const AboutUsPage: React.FC = () => {
                 </div>
                 <h3 className="font-bold text-slate-900 text-base">Flexible Dual Payments</h3>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  Integrated Razorpay UPI / Card payments alongside traditional pay-at-counter cash modes give customers and shops ultimate flexibility.
+                  Integrated PayU UPI / card payments alongside traditional pay-at-counter cash modes give customers and shops ultimate flexibility.
                 </p>
               </div>
 

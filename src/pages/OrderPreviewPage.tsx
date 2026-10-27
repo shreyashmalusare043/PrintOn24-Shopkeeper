@@ -1,62 +1,61 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { useShopkeeper } from '@/contexts/ShopkeeperContext';
-import { shopkeeperApi } from '@/services/shopkeeperApi';
-import { getUnprintedSubRanges, computeDocumentPageStatuses } from '@/utils/printRangeUtils';
 import {
-  clearDocumentCache,
-  loadDocument,
-  renderPdfPage,
-  renderDocumentToPrintDataUrl,
-  type PdfDocumentWrapper,
-} from '@/services/pdfViewerService';
-import { localPrintAgent } from '@/services/localPrintAgent';
-import { isPhysicalPrinter, isAllowedVirtualPrinter } from '@/services/qzTrayService';
-import type { PrintOrder, ShopPrinter } from '@/types/shopkeeper';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog';
-import { Label } from '@/components/ui/label';
-import {
+  AlertCircle,
   ArrowLeft,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Copy,
+  Download,
+  FileText,
+  Layers,
+  Maximize2,
+  Menu,
+  Minimize2,
+  Printer,
+  RefreshCw,
+  RotateCw,
+  SlidersHorizontal,
+  Sparkles,
+  X,
   ZoomIn,
   ZoomOut,
-  Maximize2,
-  Minimize2,
-  RotateCw,
-  Download,
-  Printer,
-  Menu,
-  X,
-  FileText,
-  Sparkles,
-  Layers,
-  Copy,
-  AlertCircle,
-  RefreshCw,
-  CheckCircle2,
-  SlidersHorizontal,
 } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { QzPermissionModal } from '@/components/QzPermissionModal';
-import { PartialPrintSummaryModal } from '@/components/PartialPrintSummaryModal';
 import { ManualDuplexModal } from '@/components/ManualDuplexModal';
-import { PrintProgressControls } from '@/components/PrintProgressControls';
-import { usePrintQueueControl } from '@/hooks/usePrintQueueControl';
+import { type PrinterDriverSettings, PrinterPropertiesDialog } from '@/components/modals/PrinterPropertiesDialog';
+import { PartialPrintSummaryModal } from '@/components/PartialPrintSummaryModal';
 import {
   PrintDocumentSelectionDialog,
 } from '@/components/PrintDocumentSelectionDialog';
-import { PrinterPropertiesDialog, type PrinterDriverSettings } from '@/components/modals/PrinterPropertiesDialog';
-import type { PrintedSegment } from '@/types/shopkeeper';
+import { PrintProgressControls } from '@/components/PrintProgressControls';
+import { QzPermissionModal } from '@/components/QzPermissionModal';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import { useShopkeeper } from '@/contexts/ShopkeeperContext';
+import { usePrintQueueControl } from '@/hooks/usePrintQueueControl';
+import { localPrintAgent } from '@/services/localPrintAgent';
+import {
+  clearDocumentCache,
+  loadDocument,
+  type PdfDocumentWrapper,
+  renderDocumentToPrintDataUrl,
+  renderPdfPage,
+} from '@/services/pdfViewerService';
+import { isAllowedVirtualPrinter, isPhysicalPrinter } from '@/services/qzTrayService';
+import { shopkeeperApi } from '@/services/shopkeeperApi';
+import type { PrintedSegment, PrintOrder, ShopPrinter } from '@/types/shopkeeper';
+import { computeDocumentPageStatuses, getUnprintedSubRanges } from '@/utils/printRangeUtils';
 import { isDuplexPrint, normalizePrintSides } from '@/utils/printSides';
 
 interface UnifiedPreviewPage {
@@ -1392,9 +1391,6 @@ export default function OrderPreviewPage() {
     <div className="flex flex-col h-[calc(100vh-4rem)] bg-[#1e1e1e] text-neutral-200 overflow-hidden select-none font-sans">
       <PrintProgressControls
         progress={printQueue.progress}
-        onPause={printQueue.pause}
-        onResume={printQueue.resume}
-        onCancel={printQueue.cancel}
       />
       <PrintDocumentSelectionDialog
         open={printSelectionOpen}

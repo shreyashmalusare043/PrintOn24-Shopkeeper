@@ -1,6 +1,3 @@
-import { Pause, Play, X } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-
 export interface PrintProgress {
   orderLabel: string;
   message: string;
@@ -14,17 +11,9 @@ export interface PrintProgress {
 
 interface PrintProgressControlsProps {
   progress: PrintProgress | null;
-  onPause: () => void;
-  onResume: () => void;
-  onCancel: () => void;
 }
 
-export function PrintProgressControls({
-  progress,
-  onPause,
-  onResume,
-  onCancel,
-}: PrintProgressControlsProps) {
+export function PrintProgressControls({ progress }: PrintProgressControlsProps) {
   if (!progress) return null;
 
   const percentage =
@@ -46,33 +35,6 @@ export function PrintProgressControls({
               {progress.currentPage > 0 && ` • Page ${progress.currentPage}`}
             </div>
           )}
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          {progress.paused ? (
-            <Button size="icon" variant="outline" className="h-8 w-8" title="Resume printing" onClick={onResume}>
-              <Play className="h-3.5 w-3.5" />
-            </Button>
-          ) : (
-            <Button
-              size="icon"
-              variant="outline"
-              className="h-8 w-8"
-              title="Stop after the current printer job"
-              onClick={onPause}
-              disabled={progress.cancelling}
-            >
-              <Pause className="h-3.5 w-3.5" />
-            </Button>
-          )}
-          <Button
-            size="icon"
-            variant="destructive"
-            className="h-8 w-8"
-            title="Cancel remaining print jobs"
-            onClick={onCancel}
-          >
-            <X className="h-3.5 w-3.5" />
-          </Button>
         </div>
       </div>
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">

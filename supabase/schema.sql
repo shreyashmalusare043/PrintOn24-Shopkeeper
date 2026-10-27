@@ -127,75 +127,8 @@ $$;
 CREATE OR REPLACE FUNCTION "public"."create_payu_transaction"("p_user_id" "text", "p_shop_id" "text", "p_order_id" "text", "p_amount" numeric, "p_product_info" "text", "p_customer_name" "text", "p_customer_email" "text", "p_customer_phone" "text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     AS $$
-DECLARE
-  v_key text := 'nD7EiA';
-  v_salt text := '9zvMlieMhahQa81Y2Y1EGoQlhPBmR9pf';
-  v_txnid text;
-  v_hash_string text;
-  v_hash text;
-  v_shop_name text := '';
-  v_shop_upi text := '';
-  v_shop_bank text := '';
 BEGIN
-  v_txnid := 'TXN_' || to_char(now(), 'YYYYMMDDHH24MISS') || '_' || floor(random() * 9000 + 1000)::text;
-
-  SELECT name, COALESCE(upi_id, ''), COALESCE(bank_account_no, '')
-  INTO v_shop_name, v_shop_upi, v_shop_bank
-  FROM public.print_shops
-  WHERE id = p_shop_id;
-
-  -- PayU hash format: sha512(key|txnid|amount|productinfo|firstname|email|udf1|udf2|udf3|udf4|udf5||||||SALT)
-  -- udf1 = shop_id, udf2 = user_id, udf3 = order_id
-  v_hash_string := v_key || '|' || v_txnid || '|' || trim(to_char(p_amount, 'FM999999990.00')) || '|' ||
-                   p_product_info || '|' || COALESCE(p_customer_name, 'Customer') || '|' ||
-                   COALESCE(p_customer_email, 'customer@printon24.io') || '|' ||
-                   p_shop_id || '|' || p_user_id || '|' || COALESCE(p_order_id, '') || '||||||||' || v_salt;
-
-  v_hash := encode(digest(v_hash_string, 'sha512'), 'hex');
-
-  -- Record initiated payment record
-  INSERT INTO public.payments (
-    id, order_id, user_id, shop_id,
-    payu_txnid, payu_hash, amount, currency,
-    payment_method, payment_status,
-    split_settlement_info, created_at
-  ) VALUES (
-    'pay_' || v_txnid,
-    p_order_id,
-    p_user_id,
-    p_shop_id,
-    v_txnid,
-    v_hash,
-    p_amount,
-    'INR',
-    'PayU',
-    'INITIATED',
-    jsonb_build_object(
-      'shop_id', p_shop_id,
-      'shop_name', v_shop_name,
-      'shop_upi', v_shop_upi,
-      'routed_account', COALESCE(NULLIF(v_shop_upi, ''), v_shop_bank, 'Shopkeeper Primary Vault'),
-      'settlement_type', 'Split Settlement'
-    ),
-    now()
-  );
-
-  RETURN jsonb_build_object(
-    'success', true,
-    'key', v_key,
-    'txnid', v_txnid,
-    'amount', trim(to_char(p_amount, 'FM999999990.00')),
-    'productinfo', p_product_info,
-    'firstname', COALESCE(p_customer_name, 'Customer'),
-    'email', COALESCE(p_customer_email, 'customer@printon24.io'),
-    'phone', COALESCE(p_customer_phone, '9999999999'),
-    'hash', v_hash,
-    'udf1', p_shop_id,
-    'udf2', p_user_id,
-    'udf3', COALESCE(p_order_id, ''),
-    'shop_name', v_shop_name,
-    'routed_account', COALESCE(NULLIF(v_shop_upi, ''), v_shop_bank, 'Shopkeeper Primary Vault')
-  );
+  RAISE EXCEPTION 'Create PayU transactions through the payu-payment Edge Function.';
 END;
 $$;
 
@@ -234,92 +167,127 @@ $$;
 CREATE OR REPLACE FUNCTION "public"."verify_payu_payment"("p_txnid" "text", "p_mihpayid" "text", "p_status" "text", "p_order_id" "text", "p_shop_id" "text", "p_amount" numeric, "p_user_id" "text", "p_membership_id" "text" DEFAULT NULL::"text") RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
     AS $$
-DECLARE
-  v_shop record;
-  v_commission numeric := 0;
-  v_net_payable numeric := p_amount;
 BEGIN
-  -- Verify shop exists
-  SELECT * INTO v_shop FROM public.print_shops WHERE id = p_shop_id;
+  RAISE EXCEPTION 'Verify PayU payments through the payu-payment Edge Function.';
+END;
+$$;
 
-  -- 1. Update payments table
-  UPDATE public.payments
-  SET 
-    payu_mihpayid = p_mihpayid,
-    payment_status = CASE WHEN lower(p_status) IN ('success', 'paid') THEN 'PAID' ELSE 'FAILED' END
-  WHERE payu_txnid = p_txnid;
+CREATE OR REPLACE FUNCTION public.complete_payu_subscription(
+  p_txnid text,
+  p_mihpayid text,
+  p_bank_ref_num text,
+  p_unmappedstatus text
+) RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_payment record;
+  v_subscription_id text;
+  v_start timestamptz := now();
+BEGIN
+  SELECT *
+  INTO v_payment
+  FROM public.payments
+  WHERE payu_txnid = p_txnid
+  FOR UPDATE;
 
   IF NOT FOUND THEN
-    INSERT INTO public.payments (
-      id, order_id, user_id, shop_id,
-      payu_txnid, payu_mihpayid, amount, currency,
-      payment_method, payment_status, created_at
-    ) VALUES (
-      'pay_' || p_txnid, p_order_id, p_user_id, p_shop_id,
-      p_txnid, p_mihpayid, p_amount, 'INR',
-      'PayU',
-      CASE WHEN lower(p_status) IN ('success', 'paid') THEN 'PAID' ELSE 'FAILED' END,
-      now()
-    );
+    RAISE EXCEPTION 'PayU transaction was not found.';
   END IF;
 
-  -- 2. If Order ID exists, update print_orders
-  IF p_order_id IS NOT NULL AND p_order_id != '' THEN
-    UPDATE public.print_orders
-    SET 
-      payment_method = 'PayU Online',
+  IF v_payment.payment_status = 'PAID' AND v_payment.hash_verified THEN
+    RETURN jsonb_build_object('success', true, 'already_processed', true);
+  END IF;
+
+  IF v_payment.subscription_plan_id IS NULL
+     OR v_payment.subscription_duration_days IS NULL
+     OR v_payment.subscription_pc_limit IS NULL
+     OR v_payment.subscription_duration_days < 1
+     OR v_payment.subscription_pc_limit < 1 THEN
+    RAISE EXCEPTION 'PayU subscription transaction is incomplete.';
+  END IF;
+
+  UPDATE public.payments
+  SET payu_mihpayid = p_mihpayid,
       payment_status = 'PAID',
-      order_status = 'Queued',
-      payu_txnid = p_txnid,
-      payu_payment_id = p_mihpayid
-    WHERE id = p_order_id;
+      hash_verified = true,
+      bank_ref_num = NULLIF(p_bank_ref_num, ''),
+      unmappedstatus = NULLIF(p_unmappedstatus, ''),
+      paid_at = v_start,
+      updated_at = v_start
+  WHERE id = v_payment.id;
+
+  SELECT id
+  INTO v_subscription_id
+  FROM public.shop_subscriptions
+  WHERE shop_id = v_payment.shop_id
+  ORDER BY start_date DESC NULLS LAST
+  LIMIT 1
+  FOR UPDATE;
+
+  IF v_subscription_id IS NULL THEN
+    v_subscription_id := 'sub_' || v_payment.shop_id;
+    INSERT INTO public.shop_subscriptions (
+      id, shop_id, plan_id, plan_name, price, pc_limit, validity_days,
+      start_date, expiry_date, status, auto_renew, payment_id, order_id, payment_status
+    )
+    SELECT
+      v_subscription_id, v_payment.shop_id, v_payment.subscription_plan_id, plan.name,
+      v_payment.amount, v_payment.subscription_pc_limit, v_payment.subscription_duration_days,
+      v_start, v_start + make_interval(days => v_payment.subscription_duration_days),
+      'active', true, p_mihpayid, v_payment.order_id, 'completed'
+    FROM public.subscription_plans AS plan
+    WHERE plan.id = v_payment.subscription_plan_id;
+  ELSE
+    UPDATE public.shop_subscriptions AS subscription
+    SET plan_id = v_payment.subscription_plan_id,
+        plan_name = plan.name,
+        price = v_payment.amount,
+        pc_limit = v_payment.subscription_pc_limit,
+        validity_days = v_payment.subscription_duration_days,
+        start_date = v_start,
+        expiry_date = v_start + make_interval(days => v_payment.subscription_duration_days),
+        status = 'active',
+        auto_renew = true,
+        payment_id = p_mihpayid,
+        order_id = v_payment.order_id,
+        payment_status = 'completed'
+    FROM public.subscription_plans AS plan
+    WHERE subscription.id = v_subscription_id
+      AND plan.id = v_payment.subscription_plan_id;
   END IF;
 
-  -- 3. Log into shop_settlements for PayU split settlement to shopkeeper
-  IF lower(p_status) IN ('success', 'paid') AND p_shop_id IS NOT NULL THEN
-    v_commission := round(p_amount * 0.05, 2);
-    v_net_payable := p_amount - v_commission;
-
-    INSERT INTO public.shop_settlements (
-      id, shop_id, shop_name, total_orders,
-      gross_amount, platform_commission, net_payable,
-      settlement_cycle, status, bank_account_no, paid_at, created_at
-    ) VALUES (
-      'stl_' || to_char(now(), 'YYYYMMDDHH24MISS') || '_' || floor(random() * 900 + 100)::text,
-      p_shop_id,
-      COALESCE(v_shop.name, 'Shop Partner'),
-      1,
-      p_amount,
-      v_commission,
-      v_net_payable,
-      'Instant PayU Split Settlement',
-      'COMPLETED',
-      COALESCE(v_shop.upi_id, v_shop.bank_account_no, 'Direct PayU Routed Account'),
-      now(),
-      now()
-    );
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Subscription plan was not found while activating payment.';
   END IF;
 
-  -- 4. If membership purchase
-  IF p_membership_id IS NOT NULL AND p_membership_id != '' AND lower(p_status) IN ('success', 'paid') THEN
-    UPDATE public.user_memberships
-    SET 
-      is_active = true,
-      updated_at = now()
-    WHERE id = p_membership_id;
+  UPDATE public.print_shops
+  SET pc_limit = v_payment.subscription_pc_limit
+  WHERE id = v_payment.shop_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Shop was not found while activating payment.';
   END IF;
 
   RETURN jsonb_build_object(
     'success', true,
-    'verified', lower(p_status) IN ('success', 'paid'),
     'txnid', p_txnid,
-    'mihpayid', p_mihpayid,
-    'order_id', p_order_id,
-    'shop_id', p_shop_id,
-    'status', p_status
+    'shop_id', v_payment.shop_id,
+    'plan_id', v_payment.subscription_plan_id
   );
 END;
 $$;
+
+REVOKE ALL ON FUNCTION public.create_payu_transaction(text, text, text, numeric, text, text, text, text)
+  FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.verify_payu_payment(text, text, text, text, text, numeric, text, text)
+  FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.complete_payu_subscription(text, text, text, text)
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.complete_payu_subscription(text, text, text, text)
+  TO service_role;
 
 
 SET default_tablespace = '';
@@ -602,7 +570,10 @@ CREATE TABLE IF NOT EXISTS "public"."payments" (
     "raw_response" "jsonb",
     "updated_at" timestamp with time zone DEFAULT "timezone"('utc'::"text", "now"()),
     "paid_at" timestamp with time zone,
-    "payment_mode" "text"
+    "payment_mode" "text",
+    "subscription_plan_id" "text",
+    "subscription_duration_days" integer,
+    "subscription_pc_limit" integer
 );
 
 

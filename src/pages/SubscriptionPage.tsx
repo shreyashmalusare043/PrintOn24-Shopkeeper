@@ -1,30 +1,30 @@
-import React, { useState, useEffect } from 'react';
-import { useShopkeeper } from '@/contexts/ShopkeeperContext';
-import { shopkeeperApi } from '@/services/shopkeeperApi';
-import { razorpayService } from '@/services/razorpayService';
-import type { ShopSubscription, SubscriptionTier } from '@/types/shopkeeper';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import {
-  ShieldCheck,
-  Check,
-  Zap,
-  Calendar,
-  CreditCard,
-  Sparkles,
-  ArrowRight,
-  Monitor,
-  RotateCcw,
   AlertCircle,
+  ArrowRight,
+  Calendar,
+  Check,
+  CheckCircle2,
+  Clock,
+  CreditCard,
   FileText,
   Lock,
+  Monitor,
   RefreshCw,
-  CheckCircle2,
+  RotateCcw,
+  ShieldCheck,
+  Sparkles,
   XCircle,
-  Clock,
+  Zap,
 } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
 import { toast } from 'sonner';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { useShopkeeper } from '@/contexts/ShopkeeperContext';
+import { payuService } from '@/services/payuService';
+import { shopkeeperApi } from '@/services/shopkeeperApi';
+import type { ShopSubscription, SubscriptionTier } from '@/types/shopkeeper';
 
 export const SubscriptionPage: React.FC = () => {
   const { user, shop, refreshShopData } = useShopkeeper();
@@ -59,8 +59,23 @@ export const SubscriptionPage: React.FC = () => {
     loadSubscriptionData();
   }, [user?.shop_id]);
 
+  useEffect(() => {
+    const paymentStatus = new URLSearchParams(window.location.search).get('payment');
+    if (!paymentStatus) return;
+
+    if (paymentStatus === 'success') {
+      toast.success('PayU payment verified and subscription activated.');
+      loadSubscriptionData();
+      refreshShopData();
+    } else {
+      toast.error('PayU payment was not completed. Your subscription was not changed.');
+    }
+
+    window.history.replaceState({}, document.title, window.location.pathname);
+  }, []);
+
   // Payment checkout flow
-  const handleProceedPayment = (tier: SubscriptionTier) => {
+  const handleProceedPayment = async (tier: SubscriptionTier) => {
     if (!user?.shop_id) {
       toast.error('Shop identifier missing. Please log in.');
       return;
@@ -69,56 +84,12 @@ export const SubscriptionPage: React.FC = () => {
     setPurchasingTierId(tier.id);
     setSelectedPlanForCheckout(null);
 
-    // Call Razorpay gateway / simulation with secure verification
-    razorpayService.openCheckout({
-      amount: tier.price_monthly,
-      planId: tier.id,
-      planName: tier.name,
-      shopId: user.shop_id,
-      shopName: shop?.name || user?.owner_name || 'printOn24 Workshop',
-      userEmail: user.email || 'shop@printon24.in',
-      userPhone: shop?.contact_phone || (user as any)?.phone || '9876543210',
-      onSuccess: async (response) => {
-        try {
-          toast.loading('Verifying payment and activating subscription in database...');
-          const success = await shopkeeperApi.activateSubscriptionPlan(
-            user.shop_id,
-            {
-              id: tier.id,
-              name: tier.name,
-              price: tier.price_monthly,
-              pc_limit: tier.allowed_pcs,
-            },
-            response.paymentId
-          );
-
-          if (success) {
-            toast.dismiss();
-            toast.success(
-              `Payment Verified! (Ref: ${response.paymentId}). ${tier.name} activated with ${tier.allowed_pcs} PC licenses!`
-            );
-            await loadSubscriptionData();
-            await refreshShopData();
-          } else {
-            toast.dismiss();
-            toast.error('Payment succeeded, but database activation failed. Please contact support.');
-          }
-        } catch {
-          toast.dismiss();
-          toast.error('Error recording subscription activation.');
-        } finally {
-          setPurchasingTierId(null);
-        }
-      },
-      onFailure: (errMsg) => {
-        toast.error(`Payment Failed: ${errMsg}`);
-        setPurchasingTierId(null);
-      },
-      onCancel: () => {
-        toast.info('Subscription checkout cancelled.');
-        setPurchasingTierId(null);
-      },
-    });
+    try {
+      await payuService.openSubscriptionCheckout(user.shop_id, tier.id);
+    } catch (error) {
+      setPurchasingTierId(null);
+      toast.error(error instanceof Error ? error.message : 'Unable to start PayU checkout.');
+    }
   };
 
   const daysRemaining = currentSub
@@ -335,7 +306,7 @@ export const SubscriptionPage: React.FC = () => {
                       <CreditCard className="w-3.5 h-3.5" />
                       <span>
                         {isPurchasing
-                          ? 'Connecting Gateway...'
+                          ? 'Connecting PayU...'
                           : isCurrent
                           ? 'Renew This Plan'
                           : `Upgrade to ${tier.name}`}
@@ -399,7 +370,7 @@ export const SubscriptionPage: React.FC = () => {
               </div>
 
               <div className="text-[11px] text-muted-foreground">
-                Payment is processed securely via Razorpay (UPI, Netbanking, Cards, Wallets). Upon successful payment verification, your subscription expiry and PC terminal limit will be automatically updated in the database.
+                Payment is processed by PayU. Your subscription and PC terminal limit are updated only after the server verifies PayU&apos;s payment response.
               </div>
 
               <div className="flex justify-end gap-2 pt-2 border-t border-border">

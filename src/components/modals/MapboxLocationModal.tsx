@@ -102,6 +102,7 @@ export const MapboxLocationModal: React.FC<MapboxLocationModalProps> = ({
   const [searching, setSearching] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [geolocating, setGeolocating] = useState(false);
+  const [mapLoading, setMapLoading] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
 
   // Sync state on open
@@ -113,6 +114,7 @@ export const MapboxLocationModal: React.FC<MapboxLocationModalProps> = ({
       const validLng = initialLng && !isNaN(initialLng) ? initialLng : 73.8567;
       setCoords({ lat: validLat, lng: validLng });
       setMapError(null);
+      setMapLoading(true);
     }
   }, [open, initialAddress, initialLandmark, initialLat, initialLng]);
 
@@ -160,6 +162,7 @@ export const MapboxLocationModal: React.FC<MapboxLocationModalProps> = ({
     if (!open || !mapContainerRef.current) return;
 
     let mapInstance: mapboxgl.Map | null = null;
+    let usingFallbackStyle = !HAS_VALID_ENV_TOKEN;
 
     try {
       mapboxgl.accessToken = DEFAULT_MAPBOX_TOKEN;
@@ -179,6 +182,10 @@ export const MapboxLocationModal: React.FC<MapboxLocationModalProps> = ({
       mapInstance = map;
 
       map.addControl(new mapboxgl.NavigationControl(), 'top-right');
+      map.once('load', () => {
+        setMapLoading(false);
+        map.resize();
+      });
 
       // Create draggable custom marker
       const marker = new mapboxgl.Marker({
@@ -204,11 +211,16 @@ export const MapboxLocationModal: React.FC<MapboxLocationModalProps> = ({
       });
 
       map.on('error', (e) => {
-        if (e.error?.message?.includes('401') || e.error?.message?.includes('Forbidden')) {
-          // Switch to open raster tiles seamlessly
-          if (mapInstance && mapInstance.setStyle) {
-            mapInstance.setStyle(OPEN_STREET_STYLE);
-          }
+        const message = e.error?.message || 'Map tiles could not be loaded.';
+        const mapboxAuthError =
+          /401|403|unauthorized|forbidden|access token/i.test(message);
+        if (!usingFallbackStyle && mapboxAuthError && mapInstance) {
+          usingFallbackStyle = true;
+          setMapError('Mapbox could not load. Switching to OpenStreetMap…');
+          mapInstance.setStyle(OPEN_STREET_STYLE);
+        } else if (usingFallbackStyle) {
+          setMapLoading(false);
+          setMapError('The live map could not be loaded. Check your internet connection and try again.');
         }
       });
 
@@ -242,6 +254,7 @@ export const MapboxLocationModal: React.FC<MapboxLocationModalProps> = ({
         markerRef.current = null;
       };
     } catch (err: any) {
+      setMapLoading(false);
       setMapError(err?.message || 'Failed to initialize Mapbox view.');
     }
   }, [open]);
@@ -444,6 +457,12 @@ export const MapboxLocationModal: React.FC<MapboxLocationModalProps> = ({
           {/* Mapbox Canvas Container */}
           <div className="relative w-full h-64 sm:h-80 rounded-xl overflow-hidden border border-border shadow-inner bg-muted/40">
             <div ref={mapContainerRef} className="w-full h-full" />
+            {mapLoading && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center bg-muted/70 text-xs text-muted-foreground">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin text-primary" />
+                Loading live map…
+              </div>
+            )}
             <div className="absolute bottom-2 left-2 bg-background/90 backdrop-blur-sm border border-border px-2 py-1 rounded text-[10px] font-mono text-muted-foreground z-10 flex items-center gap-1.5">
               <Compass className="w-3 h-3 text-primary" />
               <span>

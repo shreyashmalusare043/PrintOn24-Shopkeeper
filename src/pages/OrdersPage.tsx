@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useShopkeeper } from '@/contexts/ShopkeeperContext';
-import { shopkeeperApi } from '@/services/shopkeeperApi';
 import { localPrintAgent } from '@/services/localPrintAgent';
 import { loadDocument, parsePageRange, renderDocumentToPrintDataUrl } from '@/services/pdfViewerService';
+import { shopkeeperApi } from '@/services/shopkeeperApi';
 import { supabase } from '@/services/supabase';
-import type { PrintOrder, OrderStatus, ShopPricing, ShopPrinter, DynamicPaperType } from '@/types/shopkeeper';
+import type { DynamicPaperType, OrderStatus, PrintOrder, ShopPricing, ShopPrinter } from '@/types/shopkeeper';
 
 const isPhysicalPrinter = (name: string): boolean => {
   const lower = name.toLowerCase();
@@ -34,67 +34,66 @@ const normalizePagesPerSheet = (value: unknown): '1-in-1' | '2-in-1' | '4-in-1' 
   return normalized.includes('4') ? '4-in-1' : normalized.includes('2') ? '2-in-1' : '1-in-1';
 };
 
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import {
+  AlertTriangle,
+  Calendar,
+  Check,
+  CheckCircle2,
+  Clock,
+  Crown,
+  Download,
+  ExternalLink,
+  Eye,
+  FileText,
+  Filter,
+  History,
+  MoreVertical,
+  Pencil,
+  Pin,
+  Printer,
+  RotateCcw,
+  RotateCw,
+  Search,
+  ShieldCheck,
+  XCircle,
+} from 'lucide-react';
+import { toast } from 'sonner';
+import { ManualDuplexModal } from '@/components/ManualDuplexModal';
+import { PartialPrintSummaryModal } from '@/components/PartialPrintSummaryModal';
+import {
+  type PrintDocumentOption,
+  PrintDocumentSelectionDialog,
+} from '@/components/PrintDocumentSelectionDialog';
+import { PrintProgressControls } from '@/components/PrintProgressControls';
+import { QzPermissionModal } from '@/components/QzPermissionModal';
 import { Badge } from '@/components/ui/badge';
-import { Label } from '@/components/ui/label';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover';
-import {
-  Printer,
-  Search,
-  Filter,
-  Eye,
-  Pencil,
-  RotateCw,
-  ExternalLink,
-  Crown,
-  Check,
-  Download,
-  CheckCircle2,
-  AlertTriangle,
-  Calendar,
-  Clock,
-  RotateCcw,
-  History,
-  ShieldCheck,
-  Pin,
-  MoreVertical,
-  XCircle,
-  FileText,
-} from 'lucide-react';
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-} from '@/components/ui/dropdown-menu';
-import { toast } from 'sonner';
-import { QzPermissionModal } from '@/components/QzPermissionModal';
-import { PartialPrintSummaryModal } from '@/components/PartialPrintSummaryModal';
-import { ManualDuplexModal } from '@/components/ManualDuplexModal';
-import type { PrintedSegment } from '@/types/shopkeeper';
-
-import { getUnprintedSubRanges, computeDocumentPageStatuses } from '@/utils/printRangeUtils';
-import { isDuplexPrint, normalizePrintSides } from '@/utils/printSides';
-import { PrintProgressControls } from '@/components/PrintProgressControls';
 import { usePrintQueueControl } from '@/hooks/usePrintQueueControl';
-import {
-  PrintDocumentSelectionDialog,
-  type PrintDocumentOption,
-} from '@/components/PrintDocumentSelectionDialog';
+import type { PrintedSegment } from '@/types/shopkeeper';
+import { computeDocumentPageStatuses, getUnprintedSubRanges } from '@/utils/printRangeUtils';
+import { isDuplexPrint, normalizePrintSides } from '@/utils/printSides';
 
 type OrderPreviewData = NonNullable<Awaited<ReturnType<typeof shopkeeperApi.getOrderForPreview>>>;
 
@@ -1639,9 +1638,6 @@ export const OrdersPage: React.FC = () => {
       />
       <PrintProgressControls
         progress={printQueue.progress}
-        onPause={printQueue.pause}
-        onResume={printQueue.resume}
-        onCancel={printQueue.cancel}
       />
       {/* ---------------- 1. PRINT QUEUE HUB HEADER ---------------- */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 md:p-6 bg-card border border-border rounded-xl shadow-sm">
@@ -1915,7 +1911,7 @@ export const OrdersPage: React.FC = () => {
       <Card className="bg-card border-border rounded-xl shadow-sm overflow-hidden">
         <CardContent className="p-0">
           <div className="w-full overflow-x-auto">
-            <table className="w-full text-xs text-left font-sans">
+            <table className="w-full min-w-[1100px] text-xs text-left font-sans">
               <thead className="bg-muted/70 text-muted-foreground uppercase text-[11px] font-semibold border-b border-border">
                 <tr>
                   <th className="py-3 px-4 whitespace-nowrap">Token & ID</th>
@@ -1923,14 +1919,14 @@ export const OrdersPage: React.FC = () => {
                   <th className="py-3 px-4 whitespace-nowrap">Print Configuration</th>
                   <th className="py-3 px-4 whitespace-nowrap">Payment</th>
                   <th className="py-3 px-4 whitespace-nowrap">Status</th>
-                  <th className="py-3 px-4 text-right whitespace-nowrap">Actions</th>
+                  <th className="min-w-[310px] py-3 px-4 text-right whitespace-nowrap">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {sortedFilteredOrders.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="py-12 text-center text-muted-foreground font-sans">
-                      No matching print orders found in queue.
+                      {loading ? 'Loading orders...' : 'No matching print orders found in queue.'}
                     </td>
                   </tr>
                 ) : (
@@ -2060,14 +2056,14 @@ export const OrdersPage: React.FC = () => {
                           </div>
                         </td>
                         {/* Actions Column: Go For Print + Eye Icon + Edit Icon */}
-                        <td className="py-3 px-4 text-right whitespace-nowrap">
-                          <div className="flex items-center justify-end gap-1.5">
+                        <td className="min-w-[310px] py-3 px-4 text-right whitespace-nowrap">
+                          <div className="flex flex-nowrap items-center justify-end gap-1.5">
                             {/* 1-Click Direct Print to Physical Printer */}
                             <Button
                               size="sm"
                               disabled={printingOrderId === ord.id}
                               onClick={() => handleDirectPrint(ord)}
-                              className="h-8 px-3 text-xs font-heading font-bold bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg gap-1.5 shadow-sm active:scale-95 transition-transform"
+                              className="h-8 shrink-0 px-3 text-xs font-heading font-bold bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg gap-1.5 shadow-sm active:scale-95 transition-transform"
                               title="Print this order"
                             >
                               <Printer className={`w-3.5 h-3.5 ${printingOrderId === ord.id ? 'animate-spin' : ''}`} />
@@ -2081,7 +2077,7 @@ export const OrdersPage: React.FC = () => {
                               onClick={() => {
                                 navigate(`/orders/${ord.id}/preview`);
                               }}
-                              className="h-8 w-8 rounded-lg text-muted-foreground hover:text-foreground"
+                              className="h-8 w-8 shrink-0 rounded-lg text-muted-foreground hover:text-foreground"
                               title="Inspect Customer Document Preview"
                             >
                               <Eye className="w-3.5 h-3.5" />
@@ -2092,7 +2088,7 @@ export const OrdersPage: React.FC = () => {
                               size="icon"
                               variant="outline"
                               onClick={() => handleOpenEdit(ord)}
-                              className="h-8 w-8 rounded-lg text-muted-foreground hover:text-foreground"
+                              className="h-8 w-8 shrink-0 rounded-lg text-muted-foreground hover:text-foreground"
                               title="Edit Print Configuration"
                             >
                               <Pencil className="w-3.5 h-3.5" />
@@ -2104,7 +2100,7 @@ export const OrdersPage: React.FC = () => {
                                 <Button
                                   size="icon"
                                   variant="outline"
-                                  className="h-8 w-8 rounded-lg text-muted-foreground hover:text-foreground"
+                                  className="h-8 w-8 shrink-0 rounded-lg text-muted-foreground hover:text-foreground"
                                   title="More Order Actions"
                                 >
                                   <MoreVertical className="w-3.5 h-3.5" />

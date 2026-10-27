@@ -1123,17 +1123,28 @@ export const shopkeeperApi = {
 
     // Validate and retrieve authentic Preview Url from Upload_Document if needed
     let resolvedFileUrl = payload.fileUrl;
-    if ((!resolvedFileUrl || resolvedFileUrl.startsWith('blob:')) && payload.orderId) {
-      const { data: docRecord } = await supabase
+    if (payload.orderId) {
+      let documentQuery = supabase
         .from('uploaded_documents')
-        .select('preview_url, storage_path, storage_bucket')
-        .eq('order_id', payload.orderId)
-        .maybeSingle();
+        .select('preview_url, storage_path, storage_bucket, image_editing')
+        .eq('order_id', payload.orderId);
+      if (payload.fileName) documentQuery = documentQuery.eq('file_name', payload.fileName);
+      const { data: docRecord } = await documentQuery.maybeSingle();
 
       if (docRecord) {
-        if (docRecord.preview_url && !docRecord.preview_url.startsWith('blob:')) {
+        const imageEditing =
+          docRecord.image_editing && typeof docRecord.image_editing === 'object'
+            ? (docRecord.image_editing as Record<string, unknown>)
+            : {};
+        if (typeof imageEditing.edited_preview_url === 'string' && imageEditing.edited_preview_url) {
+          resolvedFileUrl = imageEditing.edited_preview_url;
+        } else if (
+          (!resolvedFileUrl || resolvedFileUrl.startsWith('blob:')) &&
+          docRecord.preview_url &&
+          !docRecord.preview_url.startsWith('blob:')
+        ) {
           resolvedFileUrl = docRecord.preview_url;
-        } else if (docRecord.storage_path) {
+        } else if ((!resolvedFileUrl || resolvedFileUrl.startsWith('blob:')) && docRecord.storage_path) {
           resolvedFileUrl = `https://qogdzcgvkwdnpkeejpef.supabase.co/storage/v1/object/public/${docRecord.storage_bucket || 'print_documents'}/${docRecord.storage_path}`;
         }
       }
@@ -2244,6 +2255,7 @@ export const shopkeeperApi = {
       file_type?: string;
       total_pages: number;
       print_config: any;
+      image_editing?: Record<string, unknown> | null;
     }>;
     currentDocument: {
       id: string;
@@ -2447,6 +2459,7 @@ export const shopkeeperApi = {
         file_type?: string;
         total_pages: number;
         print_config: any;
+        image_editing?: Record<string, unknown> | null;
         qualifying_pages?: any[];
       }> = [];
 
@@ -2457,7 +2470,15 @@ export const shopkeeperApi = {
           const rawConfig = d.print_config || (d as any).Configuration || (d as any).configuration || cfgDoc?.config || {};
           const printConfig = normalizeDocConfig(rawConfig);
 
-          let url = d.preview_url || cfgDoc?.fileUrl || cfgDoc?.preview_url;
+          const imageEditing =
+            d.image_editing && typeof d.image_editing === 'object'
+              ? (d.image_editing as Record<string, unknown>)
+              : {};
+          let url =
+            (typeof imageEditing.edited_preview_url === 'string' && imageEditing.edited_preview_url) ||
+            d.preview_url ||
+            cfgDoc?.fileUrl ||
+            cfgDoc?.preview_url;
           if ((!url || url.startsWith('blob:')) && d.storage_path) {
             url = `https://qogdzcgvkwdnpkeejpef.supabase.co/storage/v1/object/public/${d.storage_bucket || 'print_documents'}/${d.storage_path}`;
           }
@@ -2476,6 +2497,7 @@ export const shopkeeperApi = {
             file_type: d.file_type || d.mime_type || order.file_type,
             total_pages: totalPages,
             print_config: printConfig,
+            image_editing: imageEditing,
             qualifying_pages: qualifyingPages,
           });
         }
@@ -4264,42 +4286,6 @@ The merchant is solely responsible for credentials assigned to their counter sta
     };
   },
 
-  async activateSubscriptionPlan(
-    shopId: string,
-    plan: { id: string; name: string; price: number; pc_limit: number },
-    paymentRef: string
-  ): Promise<boolean> {
-    const startDate = new Date().toISOString();
-    const expiryDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-
-    try {
-      await supabase.from('shop_subscriptions').upsert({
-        id: `sub_${shopId}`,
-        shop_id: shopId,
-        plan_id: plan.id,
-        plan_name: plan.name,
-        price: plan.price,
-        pc_limit: plan.pc_limit,
-        validity_days: 30,
-        start_date: startDate,
-        expiry_date: expiryDate,
-        status: 'active',
-        payment_id: paymentRef,
-        auto_renew: true,
-      }, { onConflict: 'shop_id' });
-
-      // Update shop PC limit
-      await supabase
-        .from('print_shops')
-        .update({ pc_limit: plan.pc_limit })
-        .eq('id', shopId);
-
-      return true;
-    } catch {
-      return true;
-    }
-  },
-
   async getAvailableSubscriptionTiers(): Promise<SubscriptionTier[]> {
     return [
       {
@@ -4344,76 +4330,6 @@ The merchant is solely responsible for credentials assigned to their counter sta
         ],
       },
     ];
-  },
-
-  async renewSubscription(
-    shopId: string,
-    tierId: string,
-    paymentDetails?: { paymentId: string; amount: number; planName: string }
-  ): Promise<boolean> {
-    try {
-      const now = new Date();
-      const expiryDate = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-
-      const pcLimit = tierId.includes('enterprise') ? 999 : tierId.includes('pro') ? 3 : 1;
-      const planName = paymentDetails?.planName || (tierId.includes('enterprise') ? 'Commercial Enterprise' : tierId.includes('pro') ? 'Campus Pro' : 'Basic Solo');
-      const price = paymentDetails?.amount || (tierId.includes('enterprise') ? 1999 : tierId.includes('pro') ? 999 : 499);
-
-      // Check if subscription record exists
-      const { data: existing } = await supabase
-        .from('shop_subscriptions')
-        .select('*')
-        .eq('shop_id', shopId);
-
-      if (existing && existing.length > 0) {
-        await supabase
-          .from('shop_subscriptions')
-          .update({
-            plan_id: tierId,
-            plan_name: planName,
-            price: price,
-            pc_limit: pcLimit,
-            validity_days: 30,
-            start_date: now.toISOString(),
-            expiry_date: expiryDate.toISOString(),
-            status: 'active',
-          })
-          .eq('shop_id', shopId);
-      } else {
-        await supabase.from('shop_subscriptions').insert({
-          id: `sub_${shopId}`,
-          shop_id: shopId,
-          plan_id: tierId,
-          plan_name: planName,
-          price: price,
-          pc_limit: pcLimit,
-          validity_days: 30,
-          start_date: now.toISOString(),
-          expiry_date: expiryDate.toISOString(),
-          status: 'active',
-          auto_renew: true,
-        });
-      }
-
-      // Record in payments table if available
-      try {
-        await supabase.from('payments').insert({
-          id: paymentDetails?.paymentId || `pay_${Date.now()}`,
-          shop_id: shopId,
-          amount: price,
-          status: 'completed',
-          payment_method: 'Razorpay',
-          created_at: now.toISOString(),
-        });
-      } catch (e) {
-        // Non-blocking
-      }
-
-      return true;
-    } catch (err) {
-      console.error('Error renewing subscription in DB:', err);
-      return true;
-    }
   },
 
   // ---------------- CREDENTIAL & SETTINGS MANAGEMENT ----------------
