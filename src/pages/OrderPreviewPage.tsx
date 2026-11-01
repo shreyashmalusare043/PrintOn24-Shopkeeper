@@ -1406,7 +1406,7 @@ export default function OrderPreviewPage() {
           }
           const pageNums = pageChunks[chunkIndex];
           const pageImages: string[] = [];
-          if (docWrapper && docPps !== '1-in-1') {
+          if (docWrapper && (docPps !== '1-in-1' || targetOrientation === 'Landscape')) {
             for (let pageIndex = 0; pageIndex < pageNums.length; pageIndex += pagesPerSheet) {
               const sheetPages = pageNums.slice(pageIndex, pageIndex + pagesPerSheet);
               pageImages.push(

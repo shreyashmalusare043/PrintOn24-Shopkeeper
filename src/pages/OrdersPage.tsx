@@ -694,8 +694,11 @@ export const OrdersPage: React.FC = () => {
           pageChunks.push(pageNumbers.slice(pageIndex, pageIndex + pagesPerJob));
         }
 
+        const isLandscape = plan.layout.toLowerCase() === 'landscape';
         const wrapper =
-          plan.pagesPerSheet !== '1-in-1' ? await loadDocument(plan.sourceDocUrl) : undefined;
+          plan.pagesPerSheet !== '1-in-1' || isLandscape
+            ? await loadDocument(plan.sourceDocUrl, plan.doc.file_name)
+            : undefined;
         let nextChunkIndex = 0;
         for (let chunkIndex = 0; chunkIndex < pageChunks.length; chunkIndex++) {
           if (!(await printQueue.waitUntilReady())) {
@@ -706,7 +709,7 @@ export const OrdersPage: React.FC = () => {
           const pageNums = pageChunks[chunkIndex];
           const pageRange = pageNums.join(',');
           let pageImages: string[] | undefined;
-          if (wrapper && plan.pagesPerSheet !== '1-in-1') {
+          if (wrapper && (plan.pagesPerSheet !== '1-in-1' || isLandscape)) {
             pageImages = [];
             for (let pageIndex = 0; pageIndex < pageNums.length; pageIndex += pagesPerSheet) {
               const sheetPages = pageNums.slice(pageIndex, pageIndex + pagesPerSheet);
