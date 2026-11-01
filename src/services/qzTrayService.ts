@@ -2,7 +2,7 @@ import qz from 'qz-tray';
 import { clearQzAuthToken, getQzAuthToken } from '@/lib/qzAuth';
 import { createFunctionError } from '@/lib/supabaseFunctionError';
 import type { DetectedPrinter } from '@/types/shopkeeper';
-import { isDuplexPrint } from '@/utils/printSides';
+import { normalizeDuplexMode } from '@/utils/printSides';
 
 export type { DetectedPrinter };
 
@@ -24,8 +24,9 @@ export interface QzPrintPayload {
   fileUrl: string;
   pageImages?: string[]; // Pre-rendered high-res sheet images (300 DPI) matching preview 1:1
   copies?: number;
+  collateCopies?: boolean;
   colorMode?: 'B&W' | 'Color' | string;
-  duplex?: 'Single Side' | 'Back-to-Back' | string;
+  duplex?: 'Single Side' | 'Back-to-Back' | 'Tumble' | string;
   paperSize?: 'A4' | 'A3' | 'A5' | 'A2' | 'Legal' | 'Letter' | 'Tabloid' | 'Executive' | 'Glossy' | string;
   paperType?: string;
   orientation?: 'Portrait' | 'Landscape' | string;
@@ -579,7 +580,9 @@ class QzTrayService {
 
       const copies = Number(payload.copies) || 1;
       const isColor = payload.colorMode === 'Color';
-      const isDuplex = isDuplexPrint(payload.duplex);
+      const duplexMode = normalizeDuplexMode(payload.driverProperties?.duplex ?? payload.duplex);
+      const duplexOption =
+        duplexMode === 'Single Side' ? false : duplexMode === 'Tumble' ? 'tumble' : 'duplex';
       const isLandscape = (payload.orientation || '').toLowerCase() === 'landscape';
 
       // Item 1: Strict paper dimension mapping - Never force A4 when A3, Letter, Legal, etc. is requested
@@ -645,9 +648,9 @@ class QzTrayService {
 
       // Construct driver options object with exact size, tray, margins and scaling
       const configOptions: Record<string, any> = {
-        copies: copies,
+        copies: payload.collateCopies ? 1 : copies,
         colorType: isColor ? 'color' : 'grayscale',
-        duplex: isDuplex ? 'duplex' : false,
+        duplex: duplexOption,
         orientation: isLandscape ? 'landscape' : 'portrait',
         units: 'in',
         size: { width: pWidth, height: pHeight },
@@ -675,15 +678,10 @@ class QzTrayService {
         } else if (payload.driverProperties.colorMode) {
           configOptions.colorType = payload.driverProperties.colorMode === 'Color' ? 'color' : 'grayscale';
         }
-        if (payload.driverProperties.duplex !== undefined && isDuplexPrint(payload.driverProperties.duplex)) {
-          configOptions.duplex = 'duplex';
-        }
         if (payload.driverProperties.mediaSource && payload.driverProperties.mediaSource !== 'Auto Select') {
           configOptions.mediaSource = payload.driverProperties.mediaSource;
         }
       }
-
-      configOptions.duplex = isDuplex ? 'duplex' : false;
 
       // Create QZ Tray printer configuration with exact target physical dimensions
       const config = qz.configs.create(payload.printerName, configOptions);
@@ -787,7 +785,10 @@ class QzTrayService {
       }
 
       // Dispatch directly and silently to the real physical printer!
-      await qz.print(config, printData);
+      const printCopies = payload.collateCopies ? copies : 1;
+      for (let copyNumber = 0; copyNumber < printCopies; copyNumber += 1) {
+        await qz.print(config, printData);
+      }
 
       return {
         success: true,

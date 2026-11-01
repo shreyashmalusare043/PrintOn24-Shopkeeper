@@ -84,6 +84,7 @@ COMMENT ON EXTENSION "uuid-ossp" IS 'generate universally unique identifiers (UU
 
 CREATE OR REPLACE FUNCTION "public"."cleanup_expired_print_documents"() RETURNS "jsonb"
     LANGUAGE "plpgsql" SECURITY DEFINER
+    SET search_path TO 'public', 'pg_temp'
     AS $$
 DECLARE
   v_count integer := 0;
@@ -137,8 +138,9 @@ $$;
 -- Name: resolve_shop_by_qr("text"); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE OR REPLACE FUNCTION "public"."resolve_shop_by_qr"("p_code" "text") RETURNS TABLE("shop_id" "text", "shop_name" "text", "shop_city" "text", "shop_code" "text", "is_open" boolean, "terminal_code" "text")
+CREATE OR REPLACE FUNCTION "public"."resolve_shop_by_qr"("p_code" "text") RETURNS TABLE("shop_id" "text", "shop_name" "text", "shop_city" "text", "shop_code" "text", "is_open" boolean, "terminal_code" "text", "is_online" boolean)
     LANGUAGE "plpgsql" SECURITY DEFINER
+    SET search_path TO 'public', 'pg_temp'
     AS $$
 BEGIN
   RETURN QUERY
@@ -148,7 +150,8 @@ BEGIN
     ps.city AS shop_city,
     COALESCE(ps.shop_code, ps.terminal_code) AS shop_code,
     ps.is_open,
-    ps.terminal_code
+    ps.terminal_code,
+    COALESCE(ps.is_online, true) AS is_online
   FROM print_shops ps
   LEFT JOIN shop_qrs sq ON sq.shop_id = ps.id
   WHERE UPPER(TRIM(ps.shop_code)) = UPPER(TRIM(p_code))
@@ -716,6 +719,7 @@ CREATE TABLE IF NOT EXISTS "public"."print_shops" (
     "rating" numeric DEFAULT 4.8,
     "total_reviews" integer DEFAULT 120,
     "is_open" boolean DEFAULT true,
+    "is_online" boolean DEFAULT true,
     "created_at" timestamp with time zone DEFAULT "now"(),
     "qr_code_data" "text",
     "bank_account_no" "text",

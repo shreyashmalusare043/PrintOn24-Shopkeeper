@@ -316,6 +316,7 @@ export const GoForPrintModal: React.FC = () => {
         fileName: fileName,
         fileUrl: fileUrl,
         copies: copies,
+        collateCopies: true,
         colorMode: colorMode,
         duplex: duplex,
         paperSize: paperSize,

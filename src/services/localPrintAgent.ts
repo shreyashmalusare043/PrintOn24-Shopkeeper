@@ -1,5 +1,6 @@
 import { type QzPrintPayload, type QzTrayStatus, qzTrayService } from '@/services/qzTrayService';
 import type { DetectedPrinter } from '@/types/shopkeeper';
+import type { DuplexMode } from '@/utils/printSides';
 
 export type { DetectedPrinter };
 
@@ -28,8 +29,9 @@ export interface PrintJobPayload {
   fileUrl?: string;
   pageImages?: string[]; // High-res 300 DPI sheet images matching preview 1:1
   copies: number;
+  collateCopies?: boolean;
   colorMode: 'B&W' | 'Color';
-  duplex: 'Single Side' | 'Back-to-Back';
+  duplex: DuplexMode;
   paperSize: 'A4' | 'A3' | 'Legal' | 'Letter' | 'A5' | 'Tabloid' | 'Executive' | 'Glossy' | string;
   paperType: 'Standard 75 GSM' | 'Bond Paper' | 'Glossy' | 'Executive' | string;
   pageCount: number;
@@ -96,6 +98,7 @@ class QzPrintAdapter {
       fileUrl: payload.fileUrl || '',
       pageImages: payload.pageImages,
       copies: payload.copies,
+      collateCopies: payload.collateCopies,
       colorMode: payload.colorMode,
       duplex: payload.duplex,
       paperSize: payload.paperSize,

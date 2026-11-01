@@ -33,7 +33,7 @@ import { shopkeeperApi } from '@/services/shopkeeperApi';
 import type { ShopPrinter } from '@/types/shopkeeper';
 
 const PRINTER_PAPER_SIZES = ['A4', 'A3', 'Letter', 'Ledger', 'Legal'];
-const PRINTER_PAPER_TYPES = ['Standard 75 GSM', 'Bond Paper', 'Glossy', 'Envelope', 'Executive'];
+const PRINTER_PAPER_TYPES = ['Standard 75 GSM', '70 GSM', 'Bond Paper', 'Glossy', 'Envelope', 'Executive'];
 
 interface MultiOptionDropdownProps {
   label: string;

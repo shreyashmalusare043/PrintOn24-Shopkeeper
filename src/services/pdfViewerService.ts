@@ -76,6 +76,7 @@ export function parsePageRange(rangeStr: string | undefined | null, totalPages: 
 // Document and page cache for instant preview loading
 const documentCache = new Map<string, Promise<PdfDocumentWrapper>>();
 const thumbCache = new Map<string, string>();
+const temporaryDocumentUrls = new Set<string>();
 
 export function clearDocumentCache(): void {
   const cachedDocuments = Array.from(documentCache.values());
@@ -89,6 +90,11 @@ export function clearDocumentCache(): void {
         console.warn('Failed to release cached PDF document:', err);
       });
   }
+
+  for (const url of temporaryDocumentUrls) {
+    URL.revokeObjectURL(url);
+  }
+  temporaryDocumentUrls.clear();
 }
 
 /**
@@ -98,7 +104,40 @@ export function clearDocumentCache(): void {
  * Loads a document (PDF, Image, Office formats PPT/DOCX/Excel, or text) and returns a normalized PdfDocumentWrapper.
  * Results are cached in memory by fileUrl so subsequent requests are instant.
  */
-export async function loadDocument(fileUrl: string): Promise<PdfDocumentWrapper> {
+export async function loadDocumentFromBlob(blob: Blob, fileName: string): Promise<PdfDocumentWrapper> {
+  if (/\.pdf$/i.test(fileName) || blob.type.toLowerCase().includes('pdf')) {
+    try {
+      const pdfDoc = await pdfjsLib.getDocument({
+        data: await blob.arrayBuffer(),
+        cMapUrl: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/',
+        cMapPacked: true,
+        enableXfa: true,
+      }).promise;
+      const firstPage = await pdfDoc.getPage(1);
+      const viewport = firstPage.getViewport({ scale: 1 });
+      return {
+        numPages: pdfDoc.numPages,
+        pdfDoc,
+        isImage: false,
+        detectedOrientation: viewport.width > viewport.height ? 'Landscape' : 'Portrait',
+        naturalWidth: viewport.width,
+        naturalHeight: viewport.height,
+      };
+    } catch (error) {
+      throw new Error(
+        `Could not parse PDF data for "${fileName}": ${
+          error instanceof Error ? error.message : 'unknown PDF data error'
+        }`
+      );
+    }
+  }
+
+  const objectUrl = URL.createObjectURL(blob);
+  temporaryDocumentUrls.add(objectUrl);
+  return loadDocument(objectUrl, fileName);
+}
+
+export async function loadDocument(fileUrl: string, fileName?: string): Promise<PdfDocumentWrapper> {
   if (!fileUrl) {
     return { numPages: 1, pdfDoc: null, isImage: false };
   }
@@ -108,7 +147,7 @@ export async function loadDocument(fileUrl: string): Promise<PdfDocumentWrapper>
   }
 
   const loadPromise = (async () => {
-    const cleanUrl = fileUrl.split('?')[0].toLowerCase();
+    const cleanUrl = (fileName || fileUrl).split('?')[0].toLowerCase();
     const isImage = /\.(jpe?g|png|webp|gif|bmp|svg)$/i.test(cleanUrl);
     const isPpt = /\.(pptx?)$/i.test(cleanUrl);
     const isExcel = /\.(xlsx?|csv)$/i.test(cleanUrl);

@@ -700,6 +700,22 @@ export const shopkeeperApi = {
     }
   },
 
+  async setShopOnlineStatus(shopId: string, isOnline: boolean): Promise<void> {
+    const { data, error } = await supabase
+      .from('print_shops')
+      .update({ is_online: isOnline })
+      .eq('id', shopId)
+      .select('id')
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to update shop availability: ${error.message}`);
+    }
+    if (!data) {
+      throw new Error('Shop not found or you do not have permission to change its availability.');
+    }
+  },
+
   async updateShopProfile(shopId: string, updates: Partial<ShopProfile>): Promise<boolean> {
     try {
       const banner = updates.banner_url || updates.logo_url || updates.image_url;
@@ -2252,6 +2268,9 @@ export const shopkeeperApi = {
       order_id: string;
       file_name: string;
       file_url: string;
+      preview_urls: string[];
+      storage_bucket?: string;
+      storage_path?: string;
       file_type?: string;
       total_pages: number;
       print_config: any;
@@ -2262,6 +2281,9 @@ export const shopkeeperApi = {
       order_id: string;
       file_name: string;
       file_url: string;
+      preview_urls: string[];
+      storage_bucket?: string;
+      storage_path?: string;
       file_type?: string;
       total_pages: number;
       print_config: any;
@@ -2309,18 +2331,25 @@ export const shopkeeperApi = {
               .maybeSingle()
           : Promise.resolve({ data: null }),
         supabase
-          .from('uploaded_documents')
+          .from('Upload_Document')
           .select('*')
           .in('order_id', orderIdentifiers)
           .order('created_at', { ascending: true }),
         docIdsFromConfig.length > 0
           ? supabase
-              .from('uploaded_documents')
+              .from('Upload_Document')
               .select('*')
               .in('id', docIdsFromConfig)
               .order('created_at', { ascending: true })
           : Promise.resolve({ data: null }),
       ]);
+
+      if ('error' in docsByOrderResult && docsByOrderResult.error) {
+        throw new Error(`Could not fetch Upload_Document rows for this order: ${docsByOrderResult.error.message}`);
+      }
+      if ('error' in docsByIdResult && docsByIdResult.error) {
+        throw new Error(`Could not fetch configured Upload_Document rows: ${docsByIdResult.error.message}`);
+      }
 
       if (profileResult.data) {
         const fullName = `${profileResult.data.name || ''} ${profileResult.data.surname || ''}`.trim();
@@ -2456,6 +2485,9 @@ export const shopkeeperApi = {
         order_id: string;
         file_name: string;
         file_url: string;
+        preview_urls: string[];
+        storage_bucket?: string;
+        storage_path?: string;
         file_type?: string;
         total_pages: number;
         print_config: any;
@@ -2474,17 +2506,19 @@ export const shopkeeperApi = {
             d.image_editing && typeof d.image_editing === 'object'
               ? (d.image_editing as Record<string, unknown>)
               : {};
-          let url =
-            (typeof imageEditing.edited_preview_url === 'string' && imageEditing.edited_preview_url) ||
-            d.preview_url ||
-            cfgDoc?.fileUrl ||
-            cfgDoc?.preview_url;
-          if ((!url || url.startsWith('blob:')) && d.storage_path) {
-            url = `https://qogdzcgvkwdnpkeejpef.supabase.co/storage/v1/object/public/${d.storage_bucket || 'print_documents'}/${d.storage_path}`;
-          }
-          if (!url) {
-            url = order.file_url || '';
-          }
+          const editedStoragePath =
+            typeof imageEditing.edited_storage_path === 'string' ? imageEditing.edited_storage_path : '';
+          const storageBucket = d.storage_bucket || 'print_documents';
+          const storagePath = editedStoragePath || d.storage_path || '';
+          const previewUrls = [
+            typeof imageEditing.edited_preview_url === 'string' ? imageEditing.edited_preview_url : '',
+            d.converted_pdf_url,
+            d.preview_url,
+            cfgDoc?.fileUrl,
+            cfgDoc?.preview_url,
+            d.original_file_url,
+          ].filter((candidate): candidate is string => typeof candidate === 'string' && Boolean(candidate));
+          const url = previewUrls[0] || '';
 
           const totalPages = d.total_pages || cfgDoc?.totalPages || 1;
           const qualifyingPages = computeQualifyingPages(totalPages, printConfig);
@@ -2493,7 +2527,10 @@ export const shopkeeperApi = {
             id: d.id,
             order_id: d.order_id || order.id,
             file_name: d.original_file_name || d.file_name || cfgDoc?.fileName || order.document_name,
-            file_url: url,
+            file_url: url || order.file_url || '',
+            preview_urls: previewUrls,
+            storage_bucket: storageBucket,
+            storage_path: storagePath,
             file_type: d.file_type || d.mime_type || order.file_type,
             total_pages: totalPages,
             print_config: printConfig,
@@ -2517,6 +2554,9 @@ export const shopkeeperApi = {
               order_id: order.id,
               file_name: cfgDoc.fileName || cfgDoc.file_name || order.document_name,
               file_url: cfgDoc.fileUrl || cfgDoc.preview_url || order.file_url || '',
+              preview_urls: [cfgDoc.fileUrl, cfgDoc.preview_url, order.file_url].filter(
+                (candidate): candidate is string => typeof candidate === 'string' && Boolean(candidate)
+              ),
               file_type: cfgDoc.fileType || 'application/pdf',
               total_pages: totalPages,
               print_config: printConfig,
@@ -2563,6 +2603,7 @@ export const shopkeeperApi = {
           order_id: order.id,
           file_name: order.document_name,
           file_url: order.file_url || '',
+          preview_urls: [order.file_url].filter((url): url is string => Boolean(url)),
           file_type: order.file_type || 'application/pdf',
           total_pages: totalPages,
           print_config: printConfig,

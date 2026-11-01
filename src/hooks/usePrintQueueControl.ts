@@ -11,6 +11,7 @@ interface PrintQueueControl {
   pause: () => void;
   resume: () => void;
   cancel: () => void;
+  isCancelled: () => boolean;
   waitUntilReady: () => Promise<boolean>;
   finish: () => void;
 }
@@ -60,7 +61,7 @@ export function usePrintQueueControl(): PrintQueueControl {
 
   const pause = useCallback(() => {
     controlRef.current.paused = true;
-    setProgress((current) => (current ? { ...current, paused: true, message: 'Stopped after the current printer job.' } : current));
+    setProgress((current) => (current ? { ...current, paused: true, message: 'Paused before sending the next printer job.' } : current));
   }, []);
 
   const resume = useCallback(() => {
@@ -81,6 +82,8 @@ export function usePrintQueueControl(): PrintQueueControl {
     return !controlRef.current.cancelled;
   }, []);
 
+  const isCancelled = useCallback(() => controlRef.current.cancelled, []);
+
   const finish = useCallback(() => {
     controlRef.current = { paused: false, cancelled: false };
     setProgress(null);
@@ -96,6 +99,7 @@ export function usePrintQueueControl(): PrintQueueControl {
     pause,
     resume,
     cancel,
+    isCancelled,
     waitUntilReady,
     finish,
   };

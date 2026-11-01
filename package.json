@@ -48,6 +48,7 @@
     "embla-carousel-react": "^8.6.0",
     "eventsource-parser": "^3.0.6",
     "input-otp": "^1.4.2",
+    "jszip": "^3.10.2",
     "ky": "^1.13.0",
     "lucide-react": "^0.576.0",
     "mapbox-gl": "^3.32.0",

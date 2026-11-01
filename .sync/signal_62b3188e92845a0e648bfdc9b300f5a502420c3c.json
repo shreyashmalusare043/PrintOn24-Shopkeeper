@@ -1,0 +1,6 @@
+{
+  "commit_id": "62b3188e92845a0e648bfdc9b300f5a502420c3c",
+  "commit_message": "Improve printer setup and dynamic paper storage\n\nAdd a dedicated shop paper-type table with migration, migrate legacy JSON rows, and switch paper selection to presets. Keep installed printers out of configured lists until selected and saved, persist printer capabilities, and retain completed orders in recent history only after all segments finish.\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+  "timestamp": "2026-10-23T19:52:38Z",
+  "app_id": "app-eteq08019atd"
+}

@@ -1,3 +1,5 @@
+import type { DuplexMode } from '@/utils/printSides';
+
 export type LanguageCode = 'en' | 'mr' | 'hi';
 export type ThemeMode = 'light' | 'dark';
 export type ColorTheme = 'orange' | 'indigo' | 'emerald' | 'cyan' | 'blue' | 'amber' | 'red';
@@ -31,6 +33,7 @@ export interface ShopProfile {
   rating?: number;
   total_reviews?: number;
   is_open: boolean;
+  is_online?: boolean;
   opening_hours?: string;
   image_url?: string;
   qr_code_data?: string;
@@ -126,7 +129,7 @@ export interface PrintJob {
   file_url?: string;
   copies: number;
   color_mode: 'B&W' | 'Color';
-  duplex: 'Single Side' | 'Back-to-Back';
+  duplex: DuplexMode;
   paper_size: string;
   paper_type: string;
   page_count: number;
@@ -463,7 +466,7 @@ export interface PrintedSegment {
   pages_count: number;
   copies?: number;
   color_mode: 'B&W' | 'Color';
-  duplex: 'Single Side' | 'Back-to-Back';
+  duplex: DuplexMode;
   page_size?: string;
   status: 'printed' | 'pending';
   printer_name?: string;

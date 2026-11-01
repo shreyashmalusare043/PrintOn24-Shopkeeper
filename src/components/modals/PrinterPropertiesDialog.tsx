@@ -24,6 +24,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import type { ShopPrinter } from '@/types/shopkeeper';
+import type { DuplexMode } from '@/utils/printSides';
 
 export interface PrinterDriverSettings {
   printerId: string;
@@ -34,7 +35,7 @@ export interface PrinterDriverSettings {
   mediaSource: string;
   mediaType: string;
   colorMode?: 'B&W' | 'Color' | null;
-  duplex: 'Single Side' | 'Back-to-Back' | 'Tumble';
+  duplex: DuplexMode;
   scaling: 'fit' | 'actual' | 'shrink';
   copies: number;
   dpi: number;
@@ -82,7 +83,7 @@ export const PrinterPropertiesDialog: React.FC<PrinterPropertiesDialogProps> = (
   const [colorMode, setColorMode] = useState<'B&W' | 'Color' | null>(
     currentSettings.colorMode !== undefined ? currentSettings.colorMode : null
   );
-  const [duplex, setDuplex] = useState<'Single Side' | 'Back-to-Back' | 'Tumble'>(
+  const [duplex, setDuplex] = useState<DuplexMode>(
     currentSettings.duplex || (currentPrinterObj?.is_duplex ? 'Back-to-Back' : 'Single Side')
   );
   const [scaling, setScaling] = useState<'fit' | 'actual' | 'shrink'>(
@@ -499,7 +500,7 @@ export const PrinterPropertiesDialog: React.FC<PrinterPropertiesDialogProps> = (
                   </Label>
                   <select
                     value={duplex}
-                    onChange={(e) => setDuplex(e.target.value as any)}
+                    onChange={(e) => setDuplex(e.target.value as DuplexMode)}
                     className="w-full bg-[#121316] border border-neutral-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-primary font-mono"
                   >
                     <option value="Single Side">1-Sided (Single Side)</option>
@@ -510,6 +511,11 @@ export const PrinterPropertiesDialog: React.FC<PrinterPropertiesDialogProps> = (
                     <p className="text-[11px] text-amber-400 flex items-center gap-1 font-mono">
                       <AlertTriangle className="w-3 h-3 shrink-0" />
                       Requires manual paper reinsertion prompt during print
+                    </p>
+                  )}
+                  {orientation === 'Landscape' && duplex !== 'Single Side' && (
+                    <p className="text-[11px] text-neutral-400">
+                      For landscape pages, choose the binding edge that keeps the back side upright. Short edge is commonly used for book-style turning.
                     </p>
                   )}
                 </div>

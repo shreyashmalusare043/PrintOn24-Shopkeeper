@@ -1,12 +1,13 @@
+import { Loader2, MapPin } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { Loader2, MapPin } from 'lucide-react';
-import { supabase } from '@/services/supabase';
-import { PublicNavbar } from '@/components/public/PublicNavbar';
 import { PublicFooter } from '@/components/public/PublicFooter';
+import { PublicNavbar } from '@/components/public/PublicNavbar';
+import { supabase } from '@/services/supabase';
 
 type ResolvedShop = {
   shop_id: string;
+  is_online: boolean;
 };
 
 export const QrShopRedirectPage: React.FC = () => {
@@ -15,6 +16,7 @@ export const QrShopRedirectPage: React.FC = () => {
 
   useEffect(() => {
     let isCurrent = true;
+    let retryTimer: number | undefined;
 
     const resolveShopAndRedirect = async () => {
       const code = shopCode.trim();
@@ -33,7 +35,15 @@ export const QrShopRedirectPage: React.FC = () => {
 
       const shop = (Array.isArray(data) ? data[0] : data) as ResolvedShop | null;
       if (!shop?.shop_id) {
-        setMessage('This shop QR code could not be found. Please ask the shop for an updated QR code.');
+        setMessage('This shop QR code is invalid. Please scan the QR code again or ask the shop for help.');
+        return;
+      }
+
+      if (!shop.is_online) {
+        setMessage('This shop is currently offline. We will automatically check again shortly.');
+        retryTimer = window.setTimeout(() => {
+          void resolveShopAndRedirect();
+        }, 5000);
         return;
       }
 
@@ -45,6 +55,7 @@ export const QrShopRedirectPage: React.FC = () => {
     void resolveShopAndRedirect();
     return () => {
       isCurrent = false;
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer);
     };
   }, [shopCode]);
 

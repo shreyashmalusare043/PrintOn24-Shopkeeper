@@ -1,16 +1,36 @@
-import React, { useState, useEffect } from 'react';
-import { Link, NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { useShopkeeper } from '@/contexts/ShopkeeperContext';
-import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
-import { Button } from '@/components/ui/button';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
+  AlertTriangle,
+  BarChart3,
+  BellRing,
+  ChevronDown,
+  CreditCard,
+  DollarSign,
+  FileText,
+  Globe,
+  HelpCircle,
+  LayoutDashboard,
+  LogOut,
+  Menu,
+  MessageSquare,
+  Monitor,
+  Moon,
+  Printer,
+  QrCode,
+  Radio,
+  RotateCcw,
+  Settings,
+  ShieldCheck,
+  Sliders,
+  Sparkles,
+  Store,
+  Sun,
+  Users,
+} from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
+import { GoForPrintModal } from '@/components/modals/GoForPrintModal';
+import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -20,35 +40,17 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import {
-  LayoutDashboard,
-  Printer,
-  QrCode,
-  Sliders,
-  DollarSign,
-  Users,
-  MessageSquare,
-  Store,
-  BarChart3,
-  BellRing,
-  HelpCircle,
-  FileText,
-  ShieldCheck,
-  CreditCard,
-  Settings,
-  LogOut,
-  Menu,
-  Monitor,
-  Globe,
-  Sun,
-  Moon,
-  AlertTriangle,
-  RotateCcw,
-  Radio,
-  ChevronDown,
-  Sparkles,
-} from 'lucide-react';
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
+import { Switch } from '@/components/ui/switch';
+import { useShopkeeper } from '@/contexts/ShopkeeperContext';
 import type { LanguageCode } from '@/types/shopkeeper';
-import { GoForPrintModal } from '@/components/modals/GoForPrintModal';
 
 interface NavItem {
   to: string;
@@ -105,6 +107,7 @@ export const ShopkeeperLayout: React.FC<{ children: React.ReactNode }> = ({ chil
     colorTheme,
     setColorTheme,
     logout,
+    setShopOnlineStatus,
     t,
     reminder,
     isReminderModalOpen,
@@ -118,6 +121,7 @@ export const ShopkeeperLayout: React.FC<{ children: React.ReactNode }> = ({ chil
   } = useShopkeeper();
 
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [updatingShopStatus, setUpdatingShopStatus] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -143,6 +147,19 @@ export const ShopkeeperLayout: React.FC<{ children: React.ReactNode }> = ({ chil
   const handleLogout = () => {
     logout();
     navigate('/login');
+  };
+
+  const handleShopOnlineChange = async (isOnline: boolean) => {
+    setUpdatingShopStatus(true);
+    try {
+      await setShopOnlineStatus(isOnline);
+      toast.success(isOnline ? 'Shop is online and available to customers.' : 'Shop is offline and hidden from customers.');
+    } catch (error) {
+      console.error('Failed to update shop online status:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to update shop availability.');
+    } finally {
+      setUpdatingShopStatus(false);
+    }
   };
 
   const selectedPc = pcs.find((p) => p.id === selectedPcId);
@@ -401,6 +418,25 @@ export const ShopkeeperLayout: React.FC<{ children: React.ReactNode }> = ({ chil
 
           {/* Right Header Controls (Language, Theme, User Menu) */}
           <div className="flex items-center gap-1.5 sm:gap-2">
+            {shop && (
+              <div className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2 py-1">
+                <span
+                  className={`hidden text-[10px] font-semibold sm:inline ${
+                    shop.is_online === false ? 'text-muted-foreground' : 'text-emerald-500'
+                  }`}
+                >
+                  {shop.is_online === false ? 'Offline' : 'Online'}
+                </span>
+                <Switch
+                  checked={shop.is_online !== false}
+                  disabled={updatingShopStatus}
+                  onCheckedChange={(checked) => void handleShopOnlineChange(checked)}
+                  aria-label="Set shop online or offline"
+                  title={shop.is_online === false ? 'Make shop visible to customers' : 'Hide shop from customers'}
+                />
+              </div>
+            )}
+
             {/* Page Reminder Alert Pill (Global across Shopkeeper Panel) */}
             {activeReminderAlert && (
               <Button

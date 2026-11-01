@@ -1,3 +1,6 @@
+import { Pause, Play, X } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+
 export interface PrintProgress {
   orderLabel: string;
   message: string;
@@ -11,9 +14,17 @@ export interface PrintProgress {
 
 interface PrintProgressControlsProps {
   progress: PrintProgress | null;
+  onPause: () => void;
+  onResume: () => void;
+  onCancel: () => void;
 }
 
-export function PrintProgressControls({ progress }: PrintProgressControlsProps) {
+export function PrintProgressControls({
+  progress,
+  onPause,
+  onResume,
+  onCancel,
+}: PrintProgressControlsProps) {
   if (!progress) return null;
 
   const percentage =
@@ -43,6 +54,41 @@ export function PrintProgressControls({ progress }: PrintProgressControlsProps) 
       <div className="mt-1 flex justify-between text-[10px] text-muted-foreground">
         <span>{progress.completedPages} / {progress.totalPages} pages submitted</span>
         <span>{percentage}%</span>
+      </div>
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <p className="text-[10px] text-muted-foreground">
+          Stops new submissions. Jobs already in the Windows printer queue may still print.
+        </p>
+        <div className="flex shrink-0 gap-1">
+          {progress.cancelling ? (
+            <Button type="button" size="sm" variant="outline" disabled className="h-7 px-2 text-[10px]">
+              Stopping...
+            </Button>
+          ) : (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={progress.paused ? onResume : onPause}
+                className="h-7 px-2 text-[10px]"
+              >
+                {progress.paused ? <Play className="mr-1 h-3 w-3" /> : <Pause className="mr-1 h-3 w-3" />}
+                {progress.paused ? 'Resume' : 'Pause'}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="destructive"
+                onClick={onCancel}
+                className="h-7 px-2 text-[10px]"
+              >
+                <X className="mr-1 h-3 w-3" />
+                Stop Remaining
+              </Button>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

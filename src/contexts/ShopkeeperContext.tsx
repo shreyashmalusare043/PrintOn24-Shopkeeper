@@ -1,21 +1,21 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
+import { getTranslation, translations } from '@/lib/i18n';
+import { type AgentStatus, localPrintAgent } from '@/services/localPrintAgent';
+import { shopkeeperApi } from '@/services/shopkeeperApi';
 import type {
+  ColorTheme,
+  LanguageCode,
+  PageReminder,
+  PrintOrder,
   ShopkeeperUser,
-  ShopProfile,
   ShopPC,
   ShopPrinter,
-  PrintOrder,
-  LanguageCode,
-  ThemeMode,
-  ColorTheme,
+  ShopProfile,
   ShopReminder,
-  PageReminder,
   ShopSubscription,
+  ThemeMode,
 } from '@/types/shopkeeper';
-import { shopkeeperApi } from '@/services/shopkeeperApi';
-import { localPrintAgent, type AgentStatus } from '@/services/localPrintAgent';
-import { getTranslation, translations } from '@/lib/i18n';
-import { toast } from 'sonner';
 
 export interface ActiveAlertInfo {
   printerId: string;
@@ -65,6 +65,7 @@ interface ShopkeeperContextType {
   }>;
   logout: () => void;
   refreshShopData: () => Promise<void>;
+  setShopOnlineStatus: (isOnline: boolean) => Promise<void>;
   t: (key: keyof typeof translations['en']) => string;
   playOrderNotificationSound: () => void;
 
@@ -270,6 +271,15 @@ export const ShopkeeperProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
   }, [user, refreshPrinters]);
 
+  const setShopOnlineStatus = useCallback(async (isOnline: boolean) => {
+    if (!user?.shop_id) {
+      throw new Error('Shop session is unavailable. Please sign in again.');
+    }
+
+    await shopkeeperApi.setShopOnlineStatus(user.shop_id, isOnline);
+    setShop((currentShop) => (currentShop ? { ...currentShop, is_online: isOnline } : currentShop));
+  }, [user?.shop_id]);
+
   // Set up Supabase Realtime subscriptions
   useEffect(() => {
     if (!user?.shop_id) return;
@@ -418,6 +428,7 @@ export const ShopkeeperProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       login,
       logout,
       refreshShopData,
+      setShopOnlineStatus,
       t,
       playOrderNotificationSound,
 
@@ -445,6 +456,7 @@ export const ShopkeeperProvider: React.FC<{ children: React.ReactNode }> = ({ ch
       subscription,
       isReminderModalOpen,
       refreshShopData,
+      setShopOnlineStatus,
       t,
       playOrderNotificationSound,
       agentStatus,

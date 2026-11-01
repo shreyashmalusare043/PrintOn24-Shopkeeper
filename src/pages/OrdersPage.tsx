@@ -92,6 +92,7 @@ import {
 } from '@/components/ui/popover';
 import { usePrintQueueControl } from '@/hooks/usePrintQueueControl';
 import type { PrintedSegment } from '@/types/shopkeeper';
+import { buildCollatedPrintRuns } from '@/utils/collatedPrintRuns';
 import { computeDocumentPageStatuses, getUnprintedSubRanges } from '@/utils/printRangeUtils';
 import { isDuplexPrint, normalizePrintSides } from '@/utils/printSides';
 
@@ -676,13 +677,14 @@ export const OrdersPage: React.FC = () => {
         plansToDispatch.push(plan);
       }
 
-      const totalPagesToPrint = plansToDispatch.reduce((total, plan) => total + plan.pageCount, 0);
+      const dispatchRuns = buildCollatedPrintRuns(plansToDispatch);
+      const totalPagesToPrint = dispatchRuns.reduce((total, run) => total + run.plan.pageCount, 0);
       printQueue.setTotalPages(totalPagesToPrint);
       printQueue.setMessage('Preparing the first print sheet...');
       let cancelled = false;
 
-      for (let planIndex = 0; planIndex < plansToDispatch.length; planIndex++) {
-        const plan = plansToDispatch[planIndex];
+      for (let planIndex = 0; planIndex < dispatchRuns.length; planIndex++) {
+        const plan = dispatchRuns[planIndex].plan;
         const totalDocumentPages = Math.max(1, Number(plan.doc.total_pages) || Number(ord.total_pages) || 1);
         const pageNumbers = parsePageRange(plan.pageRange, totalDocumentPages);
         const pagesPerSheet = plan.pagesPerSheet === '4-in-1' ? 4 : plan.pagesPerSheet === '2-in-1' ? 2 : 1;
@@ -743,7 +745,7 @@ export const OrdersPage: React.FC = () => {
             fileName: plan.docName,
             fileUrl: plan.sourceDocUrl,
             pageImages,
-            copies: plan.copies,
+            copies: 1,
             colorMode: plan.colorMode,
             duplex: plan.duplex,
             paperSize: plan.pageSize,
@@ -762,6 +764,14 @@ export const OrdersPage: React.FC = () => {
               reason: res.message || 'Printer physical dispatch error',
               pagesCount: pageNums.length,
             });
+          } else if (printQueue.isCancelled()) {
+            cancelled = true;
+            pendingSegments.push({
+              docName: plan.docName,
+              pageRange,
+              reason: 'Print stopped while the printer job was in progress; output needs verification',
+              pagesCount: pageNums.length,
+            });
           } else {
             const printedAt = new Date().toISOString();
             pageNums.forEach((pageNum) => {
@@ -776,7 +786,7 @@ export const OrdersPage: React.FC = () => {
                 status: 'printed',
                 color_mode: plan.colorMode,
                 duplex: plan.duplex,
-                copies: plan.copies,
+                copies: 1,
               });
             });
             printQueue.completePages(pageNums.length);
@@ -785,14 +795,18 @@ export const OrdersPage: React.FC = () => {
         }
 
         if (cancelled) {
-          for (let remainingPlanIndex = planIndex; remainingPlanIndex < plansToDispatch.length; remainingPlanIndex++) {
-            const remainingPlan = plansToDispatch[remainingPlanIndex];
+          for (let remainingPlanIndex = planIndex; remainingPlanIndex < dispatchRuns.length; remainingPlanIndex++) {
+            const remainingPlan = dispatchRuns[remainingPlanIndex].plan;
             const remainingPages = parsePageRange(
               remainingPlan.pageRange,
               Math.max(1, Number(remainingPlan.doc.total_pages) || Number(ord.total_pages) || 1)
             );
             const firstRemainingChunk = remainingPlanIndex === planIndex ? nextChunkIndex : 0;
-            const pagesNotSent = remainingPages.slice(firstRemainingChunk * pagesPerJob);
+            const remainingPagesPerSheet =
+              remainingPlan.pagesPerSheet === '4-in-1' ? 4 : remainingPlan.pagesPerSheet === '2-in-1' ? 2 : 1;
+            const remainingPagesPerJob =
+              remainingPagesPerSheet * (remainingPlan.duplex === 'Back-to-Back' ? 2 : 1);
+            const pagesNotSent = remainingPages.slice(firstRemainingChunk * remainingPagesPerJob);
             if (pagesNotSent.length > 0) {
               pendingSegments.push({
                 docName: remainingPlan.docName,
@@ -1638,6 +1652,9 @@ export const OrdersPage: React.FC = () => {
       />
       <PrintProgressControls
         progress={printQueue.progress}
+        onPause={printQueue.pause}
+        onResume={printQueue.resume}
+        onCancel={printQueue.cancel}
       />
       {/* ---------------- 1. PRINT QUEUE HUB HEADER ---------------- */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 md:p-6 bg-card border border-border rounded-xl shadow-sm">

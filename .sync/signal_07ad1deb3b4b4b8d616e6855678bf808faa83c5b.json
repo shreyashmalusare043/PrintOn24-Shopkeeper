@@ -1,0 +1,6 @@
+{
+  "commit_id": "07ad1deb3b4b4b8d616e6855678bf808faa83c5b",
+  "commit_message": "Improve print selection and duplex handling\n\nAdd multi-document print selection, live print controls, and enforce duplex requirements across queue and preview printing.\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+  "timestamp": "2026-10-24T15:26:02Z",
+  "app_id": "app-eteq08019atd"
+}

@@ -11,6 +11,7 @@ import {
   Maximize2,
   Menu,
   Minimize2,
+  Pencil,
   Printer,
   RefreshCw,
   RotateCw,
@@ -48,15 +49,19 @@ import { localPrintAgent } from '@/services/localPrintAgent';
 import {
   clearDocumentCache,
   loadDocument,
+  loadDocumentFromBlob,
   type PdfDocumentWrapper,
   renderDocumentToPrintDataUrl,
   renderPdfPage,
 } from '@/services/pdfViewerService';
 import { isAllowedVirtualPrinter, isPhysicalPrinter } from '@/services/qzTrayService';
 import { shopkeeperApi } from '@/services/shopkeeperApi';
+import { supabase } from '@/services/supabase';
 import type { PrintedSegment, PrintOrder, ShopPrinter } from '@/types/shopkeeper';
+import { buildCollatedPrintRuns } from '@/utils/collatedPrintRuns';
+import { getConfiguredCustomRanges } from '@/utils/documentPrintConfig';
 import { computeDocumentPageStatuses, getUnprintedSubRanges } from '@/utils/printRangeUtils';
-import { isDuplexPrint, normalizePrintSides } from '@/utils/printSides';
+import { isDuplexPrint, normalizeDuplexMode, normalizePrintSides } from '@/utils/printSides';
 
 interface UnifiedPreviewPage {
   key: string;
@@ -87,6 +92,51 @@ interface UnifiedPreviewPage {
   detectedOrientation?: 'Portrait' | 'Landscape';
 }
 
+interface EditableCustomRange {
+  pageRange: string;
+  printType: 'Color' | 'Black & White';
+  sides: 'Single Side' | 'Back-to-Back';
+}
+
+const parseSelectedPageRange = (
+  input: string,
+  totalPages: number
+): { pageNumbers: Set<number>; error: string | null } => {
+  const pageNumbers = new Set<number>();
+  const parts = input.split(',').map((part) => part.trim());
+
+  for (const part of parts) {
+    const match = part.match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+    if (!match) {
+      return {
+        pageNumbers,
+        error: `Invalid page range "${part}". Use a number or range such as 2-6.`,
+      };
+    }
+
+    const fromPage = Number(match[1]);
+    const toPage = Number(match[2] || match[1]);
+    if (!Number.isSafeInteger(fromPage) || !Number.isSafeInteger(toPage) || fromPage < 1 || toPage < fromPage) {
+      return {
+        pageNumbers,
+        error: `Invalid page range "${part}". The start page must be less than or equal to the end page.`,
+      };
+    }
+    if (toPage > totalPages) {
+      return {
+        pageNumbers,
+        error: `Page ${toPage} is invalid. This document has only ${totalPages} page${totalPages === 1 ? '' : 's'}.`,
+      };
+    }
+
+    for (let pageNumber = fromPage; pageNumber <= toPage; pageNumber += 1) {
+      pageNumbers.add(pageNumber);
+    }
+  }
+
+  return { pageNumbers, error: null };
+};
+
 export default function OrderPreviewPage() {
   const { orderId } = useParams<{ orderId: string }>();
   const navigate = useNavigate();
@@ -97,7 +147,11 @@ export default function OrderPreviewPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [order, setOrder] = useState<PrintOrder | null>(null);
   const [documents, setDocuments] = useState<any[]>([]);
+  const [downloadingDocuments, setDownloadingDocuments] = useState(false);
+  const [downloadDialogOpen, setDownloadDialogOpen] = useState(false);
+  const [selectedDownloadDocumentIds, setSelectedDownloadDocumentIds] = useState<Set<string>>(new Set());
   const [docWrappers, setDocWrappers] = useState<{ [docId: string]: PdfDocumentWrapper }>({});
+  const [previewErrors, setPreviewErrors] = useState<Record<string, string>>({});
 
   // View States
   const [currentPageIndex, setCurrentPageIndex] = useState<number>(0);
@@ -110,6 +164,19 @@ export default function OrderPreviewPage() {
   const printQueue = usePrintQueueControl();
   const [printSelectionOpen, setPrintSelectionOpen] = useState(false);
   const [selectedPrintDocumentIds, setSelectedPrintDocumentIds] = useState<Set<string>>(new Set());
+  const [editingConfigDocumentId, setEditingConfigDocumentId] = useState<string | null>(null);
+  const [editingCustomRanges, setEditingCustomRanges] = useState(false);
+  const [editConfigRangeRules, setEditConfigRangeRules] = useState<EditableCustomRange[]>([]);
+  const [savingDocumentConfig, setSavingDocumentConfig] = useState(false);
+  const [editConfigCopies, setEditConfigCopies] = useState(1);
+  const [editConfigPrintType, setEditConfigPrintType] = useState<'Color' | 'Black & White'>('Black & White');
+  const [editConfigSides, setEditConfigSides] = useState<'Single Side' | 'Back-to-Back'>('Single Side');
+  const [editConfigPageSize, setEditConfigPageSize] = useState('A4');
+  const [editConfigPaperType, setEditConfigPaperType] = useState('Standard 75 GSM');
+  const [editConfigOrientation, setEditConfigOrientation] = useState<'Portrait' | 'Landscape'>('Portrait');
+  const [editConfigPagesPerSheet, setEditConfigPagesPerSheet] = useState('1-in-1');
+  const [editConfigPageRange, setEditConfigPageRange] = useState('');
+  const [editConfigPageRangeError, setEditConfigPageRangeError] = useState<string | null>(null);
   const [summaryOpen, setSummaryOpen] = useState<boolean>(false);
   const [selectedConfigDocId, setSelectedConfigDocId] = useState<string | null>(null);
 
@@ -205,12 +272,19 @@ export default function OrderPreviewPage() {
         specific?.orientation ??
         (targetDoc ? docAutoOrientation : (common.orientation || 'Portrait'));
 
-      const effectiveDuplex = normalizePrintSides(
-        specific?.duplex ||
-        targetDoc?.print_config?.sides ||
-        targetDoc?.print_config?.duplex ||
-        order?.config_sides
-      );
+      const explicitlyConfiguredDuplex = specific?.duplex ?? common.duplex;
+      const inheritedDuplex =
+        explicitlyConfiguredDuplex ??
+        targetDoc?.print_config?.sides ??
+        targetDoc?.print_config?.duplex ??
+        order?.config_sides;
+      const normalizedDuplex = normalizeDuplexMode(inheritedDuplex);
+      const effectiveDuplex =
+        explicitlyConfiguredDuplex === undefined &&
+        effectiveOrientation === 'Landscape' &&
+        isDuplexPrint(normalizedDuplex)
+          ? 'Tumble'
+          : normalizedDuplex;
 
       return {
         ...common,
@@ -307,6 +381,7 @@ export default function OrderPreviewPage() {
     setOrder(null);
     setDocuments([]);
     setDocWrappers({});
+    setPreviewErrors({});
     setSelectedConfigDocId(null);
     setCurrentPageIndex(0);
     mainCanvasRefs.current = {};
@@ -360,17 +435,103 @@ export default function OrderPreviewPage() {
       // Show order details immediately; load the document streams after the preview shell is visible.
       setLoading(false);
       const firstDoc = result.documents[0];
-      const firstDocLoad = firstDoc?.file_url ? loadDocument(firstDoc.file_url) : Promise.resolve(null);
+      const loadPreviewDocument = async (doc: (typeof result.documents)[number]) => {
+        const imageEditing = doc.image_editing || {};
+        const storagePath =
+          typeof imageEditing.edited_storage_path === 'string' && imageEditing.edited_storage_path
+            ? imageEditing.edited_storage_path
+            : doc.storage_path;
+        const sources = Array.from(new Set([...(doc.preview_urls || []), doc.file_url].filter(Boolean)));
+        const sourceErrors: string[] = [];
+
+        const loadStorageFile = async (bucket: string, path: string, label: string) => {
+          const { data, error } = await supabase.storage.from(bucket).download(path);
+          if (!data) {
+            throw new Error(`${label}: ${error?.message || 'Storage download failed.'}`);
+          }
+          return loadDocumentFromBlob(data, doc.file_name);
+        };
+
+        if (storagePath && imageEditing.edited_storage_path) {
+          try {
+            return await loadStorageFile(
+              doc.storage_bucket || 'print_documents',
+              storagePath,
+              'Edited document'
+            );
+          } catch (error) {
+            sourceErrors.push(error instanceof Error ? error.message : String(error));
+          }
+        }
+
+        for (const source of sources) {
+          let storageReference: { bucket: string; path: string } | null = null;
+          try {
+            const pathname = new URL(source).pathname;
+            const match = pathname.match(/\/storage\/v1\/object\/(?:public|sign|authenticated)\/([^/]+)\/(.+)$/);
+            if (match) {
+              storageReference = {
+                bucket: decodeURIComponent(match[1]),
+                path: match[2].split('/').map((part) => decodeURIComponent(part)).join('/'),
+              };
+            }
+          } catch {
+            storageReference = null;
+          }
+
+          if (storageReference) {
+            try {
+              return await loadStorageFile(storageReference.bucket, storageReference.path, 'Document file');
+            } catch (error) {
+              sourceErrors.push(error instanceof Error ? error.message : String(error));
+            }
+          }
+
+          try {
+            const response = await fetch(source);
+            if (!response.ok) throw new Error(`Preview URL returned HTTP ${response.status}.`);
+            return await loadDocumentFromBlob(await response.blob(), doc.file_name);
+          } catch (error) {
+            sourceErrors.push(error instanceof Error ? error.message : String(error));
+          }
+        }
+
+        if (storagePath) {
+          try {
+            return await loadStorageFile(
+              doc.storage_bucket || 'print_documents',
+              storagePath,
+              'Original document'
+            );
+          } catch (error) {
+            sourceErrors.push(error instanceof Error ? error.message : String(error));
+          }
+        }
+
+        throw new Error(sourceErrors.join(' | ') || `No preview file is available for ${doc.file_name}.`);
+      };
+      const firstDocLoad = firstDoc ? loadPreviewDocument(firstDoc) : Promise.resolve(null);
 
       if (firstDoc) {
         void firstDocLoad
           .then((wrapper) => {
             if (wrapper && loadId === orderLoadIdRef.current) {
               setDocWrappers((current) => ({ ...current, [firstDoc.id]: wrapper }));
+              setPreviewErrors((current) => {
+                const next = { ...current };
+                delete next[firstDoc.id];
+                return next;
+              });
             }
           })
           .catch((err) => {
             console.warn(`Failed to parse wrapper for first doc ${firstDoc.file_name}:`, err);
+            if (loadId === orderLoadIdRef.current) {
+              setPreviewErrors((current) => ({
+                ...current,
+                [firstDoc.id]: err instanceof Error ? err.message : 'Document preview could not be loaded.',
+              }));
+            }
           });
       }
 
@@ -380,11 +541,24 @@ export default function OrderPreviewPage() {
         .then(async () => {
           const remainingWrappers = await Promise.all(
             result.documents.slice(1).map(async (doc) => {
-              if (!doc.file_url) return null;
               try {
-                return { id: doc.id, wrapper: await loadDocument(doc.file_url) };
+                const wrapper = await loadPreviewDocument(doc);
+                if (loadId === orderLoadIdRef.current) {
+                  setPreviewErrors((current) => {
+                    const next = { ...current };
+                    delete next[doc.id];
+                    return next;
+                  });
+                }
+                return { id: doc.id, wrapper };
               } catch (err) {
                 console.warn(`Failed to parse wrapper for doc ${doc.file_name}:`, err);
+                if (loadId === orderLoadIdRef.current) {
+                  setPreviewErrors((current) => ({
+                    ...current,
+                    [doc.id]: err instanceof Error ? err.message : 'Document preview could not be loaded.',
+                  }));
+                }
                 return null;
               }
             })
@@ -470,43 +644,7 @@ export default function OrderPreviewPage() {
       const qualifying: PageMeta[] = [];
 
       // Extract custom ranges or string specifications (e.g. "2-4", "3", "1, 3, 5-7")
-      let customRangesList: any[] = Array.isArray(cfg.customRanges) ? [...cfg.customRanges] : [];
-      const rangeSpec = String(
-        cfg.selectedPageRange ||
-        cfg.page_range ||
-        cfg.pageRange ||
-        (doc as any).page_range ||
-        order?.page_range ||
-        (order as any)?.config_page_range ||
-        ''
-      ).trim();
-
-      if (customRangesList.length === 0 && rangeSpec && rangeSpec.toLowerCase() !== 'all' && rangeSpec.toLowerCase() !== 'all pages') {
-        const parts = rangeSpec.split(',').map((p) => p.trim()).filter(Boolean);
-        parts.forEach((part) => {
-          if (part.includes('-')) {
-            const [fromS, toS] = part.split('-');
-            const fromP = Math.max(1, parseInt(fromS, 10) || 1);
-            const toP = Math.min(docTotal, Math.max(fromP, parseInt(toS, 10) || fromP));
-            customRangesList.push({
-              fromPage: fromP,
-              toPage: toP,
-              printType: cfg.printType || 'Black & White',
-              sides: normalizePrintSides(cfg.sides || cfg.duplex || order?.config_sides),
-              pageSize: cfg.pageSize || 'A4',
-            });
-          } else {
-            const p = Math.max(1, Math.min(docTotal, parseInt(part, 10) || 1));
-            customRangesList.push({
-              fromPage: p,
-              toPage: p,
-              printType: cfg.printType || 'Black & White',
-              sides: normalizePrintSides(cfg.sides || cfg.duplex || order?.config_sides),
-              pageSize: cfg.pageSize || 'A4',
-            });
-          }
-        });
-      }
+      const customRangesList = getConfiguredCustomRanges(cfg, (doc as any).page_range || order?.page_range || (order as any)?.config_page_range);
 
       const isCustomMode = (cfg.pageRangeType === 'Custom Range' || customRangesList.length > 0) && customRangesList.length > 0;
 
@@ -681,6 +819,10 @@ export default function OrderPreviewPage() {
           setRenderRevision((revision) => revision + 1);
         } catch (err) {
           console.warn(`Thumb error on ${item.key}:`, err);
+          setPreviewErrors((current) => ({
+            ...current,
+            [item.docId]: err instanceof Error ? err.message : 'Thumbnail rendering failed.',
+          }));
         } finally {
           if (inFlightThumbnailRendersRef.current[item.key] === thumbCanvas) {
             delete inFlightThumbnailRendersRef.current[item.key];
@@ -714,6 +856,10 @@ export default function OrderPreviewPage() {
           setRenderRevision((revision) => revision + 1);
         } catch (err) {
           console.warn(`Render error on ${item.key}:`, err);
+          setPreviewErrors((current) => ({
+            ...current,
+            [item.docId]: err instanceof Error ? err.message : 'Page rendering failed.',
+          }));
         } finally {
           if (inFlightRendersRef.current[item.key] === mainCanvas) {
             delete inFlightRendersRef.current[item.key];
@@ -821,23 +967,127 @@ export default function OrderPreviewPage() {
     }
   };
 
-  // Download all original customer documents
-  const handleDownload = () => {
+  // Download one original directly, or package multiple source files into one ZIP.
+  const handleDownload = async (downloadAll: boolean) => {
     if (!documents || documents.length === 0) return;
-    documents.forEach((doc, idx) => {
-      if (!doc.file_url) return;
-      setTimeout(() => {
-        const a = document.createElement('a');
-        a.href = doc.file_url;
-        a.download = doc.file_name || `Document_${idx + 1}.pdf`;
-        a.target = '_blank';
-        a.rel = 'noreferrer';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      }, idx * 300);
-    });
-    toast.success(`Download started for ${documents.length} document(s).`);
+    const targetDocuments = downloadAll
+      ? documents
+      : documents.filter((doc) => selectedDownloadDocumentIds.has(String(doc.id)));
+
+    if (targetDocuments.length === 0) {
+      toast.error('Select at least one document to download.');
+      return;
+    }
+
+    setDownloadDialogOpen(false);
+    setDownloadingDocuments(true);
+    const toastId = toast.loading(
+      targetDocuments.length > 1 ? 'Preparing documents ZIP...' : 'Preparing document download.'
+    );
+    let objectUrl: string | null = null;
+
+    try {
+      const { default: JSZip } = targetDocuments.length > 1 ? await import('jszip') : { default: null };
+      const zip = JSZip ? new JSZip() : null;
+      const usedNames = new Set<string>();
+
+      const downloadFile = async (doc: (typeof documents)[number], index: number) => {
+        const imageEditing = doc.image_editing || {};
+        const originalPath =
+          typeof imageEditing.original_storage_path === 'string' && imageEditing.original_storage_path
+            ? imageEditing.original_storage_path
+            : doc.storage_path;
+        let content: Blob | null = null;
+        let storageError: string | null = null;
+
+        if (originalPath) {
+          const { data, error } = await supabase.storage
+            .from(doc.storage_bucket || 'print_documents')
+            .download(originalPath);
+          if (data) {
+            content = data;
+          } else {
+            storageError = error?.message || 'Storage download failed.';
+          }
+        }
+
+        if (!content && doc.file_url) {
+          const response = await fetch(doc.file_url);
+          if (response.ok) {
+            content = await response.blob();
+          } else {
+            throw new Error(
+              `Failed to download ${doc.file_name || `document ${index + 1}`} (HTTP ${response.status})${
+                storageError ? `: ${storageError}` : ''
+              }.`
+            );
+          }
+        }
+
+        if (!content) {
+          throw new Error(
+            `Could not download ${doc.file_name || `document ${index + 1}`}: ${
+              storageError || 'no file URL or storage path is available.'
+            }`
+          );
+        }
+
+        return content;
+      };
+
+      if (targetDocuments.length === 1) {
+        const doc = targetDocuments[0];
+        const content = await downloadFile(doc, 0);
+        objectUrl = URL.createObjectURL(content);
+        const link = document.createElement('a');
+        link.href = objectUrl;
+        link.download = doc.file_name || 'Document_1';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        toast.success('Document download started.', { id: toastId });
+        return;
+      }
+
+      if (!zip) throw new Error('ZIP support is unavailable.');
+
+      for (let index = 0; index < targetDocuments.length; index += 1) {
+        const doc = targetDocuments[index];
+        const originalName = String(doc.file_name || `Document_${index + 1}`);
+        const safeName =
+          originalName.replace(/[<>:"/\\|?*\u0000-\u001F]/g, '_').trim() || `Document_${index + 1}`;
+        const dotIndex = safeName.lastIndexOf('.');
+        const baseName = dotIndex > 0 ? safeName.slice(0, dotIndex) : safeName;
+        const extension = dotIndex > 0 ? safeName.slice(dotIndex) : '';
+        let uniqueName = safeName;
+        let suffix = 2;
+        while (usedNames.has(uniqueName.toLowerCase())) {
+          uniqueName = `${baseName} (${suffix})${extension}`;
+          suffix += 1;
+        }
+        usedNames.add(uniqueName.toLowerCase());
+        zip.file(uniqueName, await downloadFile(doc, index));
+      }
+
+      const archive = await zip.generateAsync({ type: 'blob' });
+      objectUrl = URL.createObjectURL(archive);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = `Order_${order?.token_number || order?.id || 'Documents'}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      toast.success(`${targetDocuments.length} files downloaded as a ZIP.`, { id: toastId });
+    } catch (error) {
+      console.error('Failed to download order documents:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to download order documents.', { id: toastId });
+    } finally {
+      if (objectUrl) {
+        const downloadUrl = objectUrl;
+        window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+      }
+      setDownloadingDocuments(false);
+    }
   };
 
   // Physical Direct Print via QZ Tray: Follows exact database configurations for all documents & custom ranges
@@ -883,6 +1133,7 @@ export default function OrderPreviewPage() {
         matchedPrinter: ShopPrinter;
         layout?: string;
         pagesPerSheet?: number;
+        isCustomRange?: boolean;
       }
 
       const jobPlans: PrintJobPlan[] = [];
@@ -919,46 +1170,9 @@ export default function OrderPreviewPage() {
         const sourceDocUrl = doc.file_url || order.file_url || '';
 
         const docTotal = Number(doc.total_pages) || Number(order.total_pages) || 1;
-        let customRangesList: any[] = Array.isArray(cfg.customRanges) ? [...cfg.customRanges] : [];
-        const rangeSpec = String(
-          cfg.selectedPageRange ||
-          cfg.page_range ||
-          cfg.pageRange ||
-          (doc as any).page_range ||
-          order?.page_range ||
-          (order as any)?.config_page_range ||
-          ''
-        ).trim();
-
-        if (customRangesList.length === 0 && rangeSpec && rangeSpec.toLowerCase() !== 'all' && rangeSpec.toLowerCase() !== 'all pages') {
-          const parts = rangeSpec.split(',').map((p) => p.trim()).filter(Boolean);
-          parts.forEach((part) => {
-            if (part.includes('-')) {
-              const [fromS, toS] = part.split('-');
-              const fromP = Math.max(1, parseInt(fromS, 10) || 1);
-              const toP = Math.min(docTotal, Math.max(fromP, parseInt(toS, 10) || fromP));
-              customRangesList.push({
-                fromPage: fromP,
-                toPage: toP,
-                printType: cfg.printType || 'Black & White',
-                sides: normalizePrintSides(cfg.sides || cfg.duplex || order?.config_sides),
-                pageSize: cfg.pageSize || 'A4',
-              });
-            } else {
-              const p = Math.max(1, Math.min(docTotal, parseInt(part, 10) || 1));
-              customRangesList.push({
-                fromPage: p,
-                toPage: p,
-                printType: cfg.printType || 'Black & White',
-                sides: normalizePrintSides(cfg.sides || cfg.duplex || order?.config_sides),
-                pageSize: cfg.pageSize || 'A4',
-              });
-            }
-          });
-        }
+        const customRangesList = getConfiguredCustomRanges(cfg, (doc as any).page_range || order?.page_range || (order as any)?.config_page_range);
 
         const isCustomMode = (cfg.pageRangeType === 'Custom Range' || customRangesList.length > 0) && customRangesList.length > 0;
-
         if (isCustomMode) {
           for (const r of customRangesList) {
             const rFrom = Number(r.fromPage ?? r.from ?? 1);
@@ -968,7 +1182,7 @@ export default function OrderPreviewPage() {
             const unprintedSubRanges = getUnprintedSubRanges(
               rFrom,
               rTo,
-              (p) => isPageCoveredByPrinted(doc.id, doc.file_name, p, alreadyPrinted)
+              (pageNum) => isPageCoveredByPrinted(doc.id, doc.file_name, pageNum, alreadyPrinted)
             );
 
             if (unprintedSubRanges.length === 0) {
@@ -1016,6 +1230,7 @@ export default function OrderPreviewPage() {
                   matchedPrinter: matchResult.compatiblePrinter,
                   layout: cfg.layout || docWrappers[doc.id]?.detectedOrientation || 'Portrait',
                   pagesPerSheet: cfg.pagesPerSheet || cfg.pages_per_sheet || '1-in-1',
+                  isCustomRange: true,
                 });
               }
             }
@@ -1026,7 +1241,7 @@ export default function OrderPreviewPage() {
           const unprintedSubRanges = getUnprintedSubRanges(
             1,
             docTotal,
-            (p) => isPageCoveredByPrinted(doc.id, doc.file_name, p, alreadyPrinted)
+            (pageNum) => isPageCoveredByPrinted(doc.id, doc.file_name, pageNum, alreadyPrinted)
           );
 
           if (unprintedSubRanges.length === 0) {
@@ -1106,16 +1321,52 @@ export default function OrderPreviewPage() {
       await shopkeeperApi.updateOrderStatus(order.id, 'Printing');
 
       const newlyPrinted: PrintedSegment[] = [];
-      const totalPagesToPrint = jobPlans.reduce((total, plan) => total + plan.pageCount, 0);
+      const plansWithCopies = jobPlans.map((plan) => ({
+        ...plan,
+        copies: plan.isCustomRange
+          ? plan.copies
+          : getEffectiveSettingsForDoc(plan.docId).copies || plan.copies,
+      }));
+      const dispatchRuns = buildCollatedPrintRuns(plansWithCopies);
+      const totalPagesToPrint = dispatchRuns.reduce((total, run) => total + run.plan.pageCount, 0);
       printQueue.setTotalPages(totalPagesToPrint);
       printQueue.setMessage('Preparing the first print sheet...');
+      let cancelled = false;
 
-      for (let i = 0; i < jobPlans.length; i++) {
-        const plan = jobPlans[i];
+      for (let i = 0; i < dispatchRuns.length; i++) {
+        const plan = dispatchRuns[i].plan;
+
+        const docSettings = getEffectiveSettingsForDoc(plan.docId);
+        const docWrapper = docWrappers[plan.docId];
+        const detectedDocOrientation = docWrapper?.detectedOrientation;
+        const targetColorMode = plan.isCustomRange
+          ? plan.colorMode
+          : docSettings.colorMode
+            ? (docSettings.colorMode as any)
+            : plan.colorMode;
+        const targetOrientation: 'Portrait' | 'Landscape' =
+          docSettings.orientation ||
+          detectedDocOrientation ||
+          (plan.layout === 'Landscape' ? 'Landscape' : 'Portrait');
+        const targetScaling = docSettings.scaling || 'fit';
+        const targetPaperSize = plan.isCustomRange ? plan.pageSize : docSettings.paperSize || plan.pageSize;
+        const targetMediaType = docSettings.mediaType || plan.paperType;
+        const explicitlyConfiguredDuplex =
+          docDriverSettings[plan.docId]?.duplex ??
+          docDriverSettings.all?.duplex ??
+          driverSettings.duplex;
+        const normalizedDuplex = normalizeDuplexMode(explicitlyConfiguredDuplex ?? plan.duplex);
+        const targetDuplex = plan.isCustomRange
+          ? normalizeDuplexMode(plan.duplex)
+          : explicitlyConfiguredDuplex === undefined &&
+              targetOrientation === 'Landscape' &&
+              isDuplexPrint(normalizedDuplex)
+            ? 'Tumble'
+            : normalizedDuplex;
 
         // Item 5: Manual Duplex confirmation if printer requires manual reinsertion
         const printerDriver = plan.matchedPrinter.driver_name?.toLowerCase() || '';
-        const isManualDuplex = plan.duplex === 'Back-to-Back' && (printerDriver.includes('manual') || (plan.matchedPrinter as any).manual_duplex === true);
+        const isManualDuplex = isDuplexPrint(targetDuplex) && (printerDriver.includes('manual') || (plan.matchedPrinter as any).manual_duplex === true);
 
         if (isManualDuplex) {
           const userConfirmed = await new Promise<boolean>((resolve) => {
@@ -1136,29 +1387,12 @@ export default function OrderPreviewPage() {
             continue;
           }
         }
-
-        const docSettings = getEffectiveSettingsForDoc(plan.docId);
-        const docWrapper = docWrappers[plan.docId];
-        const detectedDocOrientation = docWrapper?.detectedOrientation;
-        const targetColorMode = docSettings.colorMode ? (docSettings.colorMode as any) : plan.colorMode;
-        const targetOrientation: 'Portrait' | 'Landscape' =
-          docSettings.orientation ||
-          detectedDocOrientation ||
-          (plan.layout === 'Landscape' ? 'Landscape' : 'Portrait');
-        const targetScaling = docSettings.scaling || 'fit';
-        const targetPaperSize = docSettings.paperSize || plan.pageSize;
-        const targetMediaType = docSettings.mediaType || plan.paperType;
-        const targetCopies = docSettings.copies || plan.copies;
-        const targetDuplex =
-          isDuplexPrint(docSettings.duplex) || isDuplexPrint(plan.duplex)
-            ? 'Back-to-Back'
-            : 'Single Side';
         const targetPageNums = plan.pageNumbers;
         const rawDocPps = String(plan.pagesPerSheet || (docSettings as any)?.pagesPerSheet || '1-in-1').toLowerCase();
         const docPps: '1-in-1' | '2-in-1' | '4-in-1' =
           rawDocPps.includes('4') ? '4-in-1' : rawDocPps.includes('2') ? '2-in-1' : '1-in-1';
         const pagesPerSheet = docPps === '4-in-1' ? 4 : docPps === '2-in-1' ? 2 : 1;
-        const pagesPerJob = pagesPerSheet * (targetDuplex === 'Back-to-Back' ? 2 : 1);
+        const pagesPerJob = pagesPerSheet * (isDuplexPrint(targetDuplex) ? 2 : 1);
         const pageChunks: number[][] = [];
         for (let pageIndex = 0; pageIndex < targetPageNums.length; pageIndex += pagesPerJob) {
           pageChunks.push(targetPageNums.slice(pageIndex, pageIndex + pagesPerJob));
@@ -1166,7 +1400,10 @@ export default function OrderPreviewPage() {
 
         let nextChunkIndex = 0;
         for (let chunkIndex = 0; chunkIndex < pageChunks.length; chunkIndex++) {
-          if (!(await printQueue.waitUntilReady())) break;
+          if (!(await printQueue.waitUntilReady())) {
+            cancelled = true;
+            break;
+          }
           const pageNums = pageChunks[chunkIndex];
           const pageImages: string[] = [];
           if (docWrapper && docPps !== '1-in-1') {
@@ -1192,7 +1429,10 @@ export default function OrderPreviewPage() {
             }
           }
 
-          if (!(await printQueue.waitUntilReady())) break;
+          if (!(await printQueue.waitUntilReady())) {
+            cancelled = true;
+            break;
+          }
           printQueue.update(
             plan.docName,
             pageNums[0],
@@ -1207,7 +1447,7 @@ export default function OrderPreviewPage() {
             fileName: plan.docName,
             fileUrl: plan.docUrl,
             pageImages: pageImages.length > 0 ? pageImages : undefined,
-            copies: targetCopies,
+            copies: 1,
             colorMode: targetColorMode,
             duplex: targetDuplex,
             paperSize: targetPaperSize,
@@ -1236,6 +1476,13 @@ export default function OrderPreviewPage() {
               reason: res.message || 'Printer physical dispatch error',
               pagesCount: pageNums.length,
             });
+          } else if (printQueue.isCancelled()) {
+            pendingSegments.push({
+              docName: plan.docName,
+              pageRange: pageNums.join(','),
+              reason: 'Print stopped while the printer job was in progress; output needs verification',
+              pagesCount: pageNums.length,
+            });
           } else {
             const printedAt = new Date().toISOString();
             pageNums.forEach((pageNum) => {
@@ -1249,8 +1496,8 @@ export default function OrderPreviewPage() {
                 printed_at: printedAt,
                 status: 'printed',
                 color_mode: plan.colorMode,
-                duplex: plan.duplex,
-                copies: plan.copies,
+                duplex: targetDuplex,
+                copies: 1,
               });
             });
             printQueue.completePages(pageNums.length);
@@ -1258,7 +1505,7 @@ export default function OrderPreviewPage() {
           nextChunkIndex = chunkIndex + 1;
         }
 
-        if (nextChunkIndex < pageChunks.length) {
+        if (cancelled || nextChunkIndex < pageChunks.length) {
           const remainingPages = pageChunks.slice(nextChunkIndex).flat();
           if (remainingPages.length > 0) {
             pendingSegments.push({
@@ -1268,7 +1515,7 @@ export default function OrderPreviewPage() {
               pagesCount: remainingPages.length,
             });
           }
-          for (const unstartedPlan of jobPlans.slice(i + 1)) {
+          for (const { plan: unstartedPlan } of dispatchRuns.slice(i + 1)) {
             pendingSegments.push({
               docName: unstartedPlan.docName,
               pageRange: unstartedPlan.pageRange || 'All Pages',
@@ -1350,6 +1597,226 @@ export default function OrderPreviewPage() {
     void handleDirectPrint(documentIds);
   };
 
+  const openEditConfig = (doc: (typeof documents)[number]) => {
+    const config = doc.print_config || {};
+    const printType = String(config.printType || config.color_mode || config.print_type || '').toLowerCase();
+    const sides = String(config.sides || config.duplex || '').toLowerCase();
+    const pageRanges = getConfiguredCustomRanges(config, (doc as any).page_range);
+    const isCustomConfig =
+      (config.pageRangeType === 'Custom Range' || pageRanges.length > 0) && pageRanges.length > 0;
+    setEditingCustomRanges(isCustomConfig);
+    setEditConfigRangeRules(
+      pageRanges.map((range) => {
+        const rangePrintType = String(range.printType || range.color_mode || config.printType || '').toLowerCase();
+        const rangeSides = String(range.sides || range.side || range.duplex || config.sides || config.duplex || '').toLowerCase();
+        return {
+          pageRange: range.fromPage === range.toPage
+            ? String(range.fromPage)
+            : `${range.fromPage}-${range.toPage}`,
+          printType: rangePrintType.includes('color') || rangePrintType.includes('colour') ? 'Color' : 'Black & White',
+          sides: rangeSides.includes('back') || rangeSides.includes('double') || rangeSides.includes('duplex') || rangeSides.includes('tumble')
+            ? 'Back-to-Back'
+            : 'Single Side',
+        };
+      })
+    );
+    const pageRange = pageRanges
+      .map((range: any) => {
+        const fromPage = Number(range.fromPage ?? range.from ?? 1);
+        const toPage = Number(range.toPage ?? range.to ?? fromPage);
+        return fromPage === toPage ? String(fromPage) : `${fromPage}-${toPage}`;
+      })
+      .join(', ');
+    const savedPageRange =
+      pageRange ||
+      String(config.selectedPageRange || config.page_range || config.pageRange || doc.page_range || '');
+
+    setEditConfigCopies(Math.max(1, Number(config.copies) || Number(order?.config_copies) || 1));
+    setEditConfigPrintType(printType.includes('color') || printType.includes('colour') ? 'Color' : 'Black & White');
+    setEditConfigSides(sides.includes('back') || sides.includes('double') ? 'Back-to-Back' : 'Single Side');
+    setEditConfigPageSize(config.pageSize || config.page_size || order?.config_page_size || 'A4');
+    setEditConfigPaperType(config.paperType || config.paper_type || order?.config_paper_type || 'Standard 75 GSM');
+    setEditConfigOrientation(
+      String(config.orientation || config.layout || '').toLowerCase() === 'landscape' ? 'Landscape' : 'Portrait'
+    );
+    setEditConfigPagesPerSheet(
+      String(config.pagesPerSheet || config.pages_per_sheet || config.nUp || '1-in-1')
+    );
+    setEditConfigPageRange(
+      ['all', 'all pages'].includes(savedPageRange.trim().toLowerCase()) ? '' : savedPageRange
+    );
+    setEditConfigPageRangeError(null);
+    setEditingConfigDocumentId(doc.id);
+  };
+
+  const saveEditedDocumentConfig = async () => {
+    if (!order || !editingConfigDocumentId) return;
+    const doc = documents.find((document) => document.id === editingConfigDocumentId);
+    if (!doc) {
+      toast.error('The selected document is no longer available.');
+      return;
+    }
+
+    const totalPages = Math.max(
+      1,
+      Number(docWrappers[doc.id]?.numPages) || Number(doc.total_pages) || 1
+    );
+    const rangeText = editConfigPageRange.trim();
+    let configRanges: Array<Record<string, string | number>> = [];
+    if (editingCustomRanges) {
+      if (editConfigRangeRules.length === 0) {
+        setEditConfigPageRangeError('Add at least one custom range before saving.');
+        return;
+      }
+
+      const occupiedPages = new Set<number>();
+      for (let ruleIndex = 0; ruleIndex < editConfigRangeRules.length; ruleIndex += 1) {
+        const rule = editConfigRangeRules[ruleIndex];
+        const ruleRange = rule.pageRange.trim();
+        if (!ruleRange) {
+          setEditConfigPageRangeError(`Enter pages for Rule ${ruleIndex + 1}.`);
+          return;
+        }
+        const parsedRule = parseSelectedPageRange(ruleRange, totalPages);
+        if (parsedRule.error) {
+          setEditConfigPageRangeError(`Rule ${ruleIndex + 1}: ${parsedRule.error}`);
+          return;
+        }
+        for (const pageNumber of parsedRule.pageNumbers) {
+          if (occupiedPages.has(pageNumber)) {
+            setEditConfigPageRangeError(`Page ${pageNumber} is included in more than one rule.`);
+            return;
+          }
+          occupiedPages.add(pageNumber);
+        }
+
+        const pageNumbers = [...parsedRule.pageNumbers].sort((a, b) => a - b);
+        const ruleRanges: Array<{ fromPage: number; toPage: number }> = [];
+        for (const pageNumber of pageNumbers) {
+          const lastRange = ruleRanges[ruleRanges.length - 1];
+          if (lastRange && lastRange.toPage === pageNumber - 1) lastRange.toPage = pageNumber;
+          else ruleRanges.push({ fromPage: pageNumber, toPage: pageNumber });
+        }
+        configRanges.push(
+          ...ruleRanges.map((range) => ({
+            ...range,
+            printType: rule.printType,
+            color_mode: rule.printType,
+            sides: rule.sides,
+            duplex: rule.sides,
+            pageSize: doc.print_config?.pageSize || 'A4',
+          }))
+        );
+      }
+    } else {
+      const parsedRange = rangeText ? parseSelectedPageRange(rangeText, totalPages) : null;
+      if (parsedRange?.error) {
+        setEditConfigPageRangeError(parsedRange.error);
+        return;
+      }
+      const selectedPages = [...(parsedRange?.pageNumbers || [])].sort((a, b) => a - b);
+      for (const pageNumber of selectedPages) {
+        const lastRange = configRanges[configRanges.length - 1];
+        if (lastRange && lastRange.toPage === pageNumber - 1) {
+          lastRange.toPage = pageNumber;
+        } else {
+          configRanges.push({ fromPage: pageNumber, toPage: pageNumber });
+        }
+      }
+      configRanges = configRanges.map((range) => ({
+        ...range,
+        printType: editConfigPrintType,
+        color_mode: editConfigPrintType,
+        sides: editConfigSides,
+        duplex: editConfigSides,
+        pageSize: editConfigPageSize,
+      }));
+    }
+
+    configRanges.sort((left, right) => Number(left.fromPage) - Number(right.fromPage));
+    const savedRangeText = configRanges
+      .map(({ fromPage, toPage }) =>
+        fromPage === toPage ? String(fromPage) : `${fromPage}-${toPage}`
+      )
+      .join(', ');
+    const nextConfig = editingCustomRanges
+      ? {
+          ...(doc.print_config || {}),
+          pageRangeType: 'Custom Range',
+          pageRange: savedRangeText,
+          selectedPageRange: savedRangeText,
+          customRanges: configRanges,
+          custom_ranges: configRanges,
+        }
+      : {
+          ...(doc.print_config || {}),
+            copies: Math.max(1, Number(editConfigCopies) || 1),
+            printType: editConfigPrintType,
+            color_mode: editConfigPrintType,
+            sides: editConfigSides,
+            duplex: editConfigSides,
+            pageSize: editConfigPageSize,
+            page_size: editConfigPageSize,
+            paperType: editConfigPaperType,
+            paper_type: editConfigPaperType,
+            orientation: editConfigOrientation,
+            layout: editConfigOrientation,
+            pagesPerSheet: editConfigPagesPerSheet,
+            pages_per_sheet: editConfigPagesPerSheet,
+            pageRangeType: configRanges.length > 0 ? 'Custom Range' : 'All Pages',
+            pageRange: rangeText || 'All Pages',
+            selectedPageRange: rangeText || 'All Pages',
+            customRanges: configRanges,
+            custom_ranges: configRanges,
+        };
+
+    setSavingDocumentConfig(true);
+    try {
+      const { error: documentError } = await supabase
+        .from('uploaded_documents')
+        .update({ print_config: nextConfig })
+        .eq('id', doc.id);
+      if (documentError) throw documentError;
+
+      const updatedDocumentsConfig = Array.isArray(order.documents_config)
+        ? order.documents_config.map((config: any) =>
+            config.id === doc.id || config.document_id === doc.id
+              ? { ...config, ...nextConfig }
+              : config
+          )
+        : order.documents_config;
+      if (Array.isArray(updatedDocumentsConfig)) {
+        const { error: orderError } = await supabase
+          .from('print_orders')
+          .update({ documents_config: updatedDocumentsConfig })
+          .eq('id', order.id);
+        if (orderError) throw orderError;
+      }
+
+      setDocuments((currentDocuments) =>
+        currentDocuments.map((currentDoc) =>
+          currentDoc.id === doc.id ? { ...currentDoc, print_config: nextConfig } : currentDoc
+        )
+      );
+      setOrder((currentOrder) =>
+        currentOrder
+          ? {
+              ...currentOrder,
+              documents_config: updatedDocumentsConfig,
+            }
+          : currentOrder
+      );
+      setEditingConfigDocumentId(null);
+      setEditingCustomRanges(false);
+      toast.success(`Configuration updated for ${doc.file_name || 'document'}.`);
+    } catch (error) {
+      console.error('Failed to update document print configuration:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to update document configuration.');
+    } finally {
+      setSavingDocumentConfig(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[85vh] bg-[#1e1e1e] text-white">
@@ -1391,6 +1858,9 @@ export default function OrderPreviewPage() {
     <div className="flex flex-col h-[calc(100vh-4rem)] bg-[#1e1e1e] text-neutral-200 overflow-hidden select-none font-sans">
       <PrintProgressControls
         progress={printQueue.progress}
+        onPause={printQueue.pause}
+        onResume={printQueue.resume}
+        onCancel={printQueue.cancel}
       />
       <PrintDocumentSelectionDialog
         open={printSelectionOpen}
@@ -1412,6 +1882,248 @@ export default function OrderPreviewPage() {
         onPrintAll={() => handlePrintSelection(true)}
         onPrintSelected={() => handlePrintSelection(false)}
       />
+      <Dialog
+        open={editingConfigDocumentId !== null}
+        onOpenChange={(open) => {
+          if (!open && !savingDocumentConfig) setEditingConfigDocumentId(null);
+        }}
+      >
+        <DialogContent className="flex max-h-[90vh] max-w-[calc(100%-2rem)] flex-col overflow-hidden rounded-xl border-border bg-card font-sans md:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base font-heading font-bold uppercase text-foreground">
+              <Pencil className="h-4 w-4 text-primary" />
+              {editingCustomRanges ? 'Edit Custom Range Rules' : 'Edit Print Configuration'}
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              {editingCustomRanges
+                ? `Add or edit page, color, and print-side rules for ${documents.find((doc) => doc.id === editingConfigDocumentId)?.file_name || 'this document'}.`
+                : `Modify print parameters for ${documents.find((doc) => doc.id === editingConfigDocumentId)?.file_name || 'this document'}.`}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-2 text-xs">
+            {editingCustomRanges ? (
+              <>
+                {editConfigRangeRules.map((rule, index) => (
+                  <div key={index} className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-foreground">Rule {index + 1}</span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={editConfigRangeRules.length <= 1}
+                        onClick={() => {
+                          setEditConfigRangeRules((current) => current.filter((_, ruleIndex) => ruleIndex !== index));
+                          setEditConfigPageRangeError(null);
+                        }}
+                        className="h-7 px-2 text-[10px]"
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor={`custom-range-pages-${index}`} className="text-xs font-semibold text-foreground">
+                        Pages
+                      </Label>
+                      <input
+                        id={`custom-range-pages-${index}`}
+                        type="text"
+                        value={rule.pageRange}
+                        onChange={(event) => {
+                          const pageRange = event.target.value;
+                          setEditConfigRangeRules((current) =>
+                            current.map((item, ruleIndex) => ruleIndex === index ? { ...item, pageRange } : item)
+                          );
+                          setEditConfigPageRangeError(null);
+                        }}
+                        placeholder="e.g. 1 or 2-4"
+                        className="h-9 w-full rounded-lg border border-border bg-background px-3 text-xs font-mono text-foreground"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label htmlFor={`custom-range-color-${index}`} className="text-xs font-semibold text-foreground">
+                          Color Type
+                        </Label>
+                        <select
+                          id={`custom-range-color-${index}`}
+                          value={rule.printType}
+                          onChange={(event) =>
+                            setEditConfigRangeRules((current) =>
+                              current.map((item, ruleIndex) =>
+                                ruleIndex === index
+                                  ? { ...item, printType: event.target.value as EditableCustomRange['printType'] }
+                                  : item
+                              )
+                            )
+                          }
+                          className="h-9 w-full rounded-lg border border-border bg-background px-2 text-xs text-foreground"
+                        >
+                          <option value="Color">Color</option>
+                          <option value="Black & White">Black &amp; White</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor={`custom-range-sides-${index}`} className="text-xs font-semibold text-foreground">
+                          Print Side
+                        </Label>
+                        <select
+                          id={`custom-range-sides-${index}`}
+                          value={rule.sides}
+                          onChange={(event) =>
+                            setEditConfigRangeRules((current) =>
+                              current.map((item, ruleIndex) =>
+                                ruleIndex === index
+                                  ? { ...item, sides: event.target.value as EditableCustomRange['sides'] }
+                                  : item
+                              )
+                            )
+                          }
+                          className="h-9 w-full rounded-lg border border-border bg-background px-2 text-xs text-foreground"
+                        >
+                          <option value="Single Side">Single Side</option>
+                          <option value="Back-to-Back">Back-to-Back</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={savingDocumentConfig}
+                  onClick={() => {
+                    setEditConfigRangeRules((current) => [
+                      ...current,
+                      { pageRange: '', printType: 'Black & White', sides: 'Single Side' },
+                    ]);
+                    setEditConfigPageRangeError(null);
+                  }}
+                  className="w-full"
+                >
+                  + Add Rule
+                </Button>
+              </>
+            ) : (
+              <>
+                <div className="space-y-1">
+                  <Label htmlFor="edit-document-copies" className="text-xs font-semibold text-foreground">
+                    Number of Copies
+                  </Label>
+                  <input
+                    id="edit-document-copies"
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={editConfigCopies}
+                    onChange={(event) => setEditConfigCopies(Math.max(1, Number(event.target.value) || 1))}
+                    className="h-9 w-full rounded-lg border border-border bg-background px-3 text-xs font-mono text-foreground"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="edit-document-page-range" className="text-xs font-semibold text-foreground">
+                    Select Pages to Print
+                  </Label>
+                  <input
+                    id="edit-document-page-range"
+                    type="text"
+                    value={editConfigPageRange}
+                    onChange={(event) => {
+                      const range = event.target.value;
+                      setEditConfigPageRange(range);
+                      const doc = documents.find((document) => document.id === editingConfigDocumentId);
+                      const pageCount = Math.max(
+                        1,
+                        Number(docWrappers[editingConfigDocumentId || '']?.numPages) ||
+                          Number(doc?.total_pages) ||
+                          1
+                      );
+                      setEditConfigPageRangeError(
+                        range.trim() ? parseSelectedPageRange(range, pageCount).error : null
+                      );
+                    }}
+                    placeholder="All pages or e.g. 2-6, 8"
+                    aria-invalid={Boolean(editConfigPageRangeError)}
+                    className={`h-9 w-full rounded-lg border bg-background px-3 text-xs font-mono text-foreground placeholder:text-muted-foreground ${
+                      editConfigPageRangeError ? 'border-destructive' : 'border-border'
+                    }`}
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Leave blank to print all pages. Total pages: {Math.max(
+                      1,
+                      Number(docWrappers[editingConfigDocumentId || '']?.numPages) ||
+                        Number(documents.find((doc) => doc.id === editingConfigDocumentId)?.total_pages) ||
+                        1
+                    )}
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="edit-document-color" className="text-xs font-semibold text-foreground">
+                      Color Mode (Print Type)
+                    </Label>
+                    <select
+                      id="edit-document-color"
+                      value={editConfigPrintType}
+                      onChange={(event) => setEditConfigPrintType(event.target.value as EditableCustomRange['printType'])}
+                      className="h-9 w-full rounded-lg border border-border bg-background px-3 text-xs text-foreground"
+                    >
+                      <option value="Black & White">Black &amp; White (B&amp;W)</option>
+                      <option value="Color">Full Colour</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="edit-document-sides" className="text-xs font-semibold text-foreground">
+                      Print Sides
+                    </Label>
+                    <select
+                      id="edit-document-sides"
+                      value={editConfigSides}
+                      onChange={(event) => setEditConfigSides(event.target.value as EditableCustomRange['sides'])}
+                      className="h-9 w-full rounded-lg border border-border bg-background px-3 text-xs text-foreground"
+                    >
+                      <option value="Single Side">Single Sided (Simplex)</option>
+                      <option value="Back-to-Back">Back-to-Back (Duplex)</option>
+                    </select>
+                  </div>
+                </div>
+              </>
+            )}
+            {editConfigPageRangeError && (
+              <p role="alert" className="text-[11px] font-medium text-destructive">
+                {editConfigPageRangeError}
+              </p>
+            )}
+          </div>
+
+          <DialogFooter className="!flex !flex-row shrink-0 gap-2 border-t border-border pt-3">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={savingDocumentConfig}
+              onClick={() => setEditingConfigDocumentId(null)}
+              className="h-9 min-w-24 flex-1 border-neutral-500 text-xs font-semibold"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={savingDocumentConfig || Boolean(editConfigPageRangeError)}
+              onClick={() => void saveEditedDocumentConfig()}
+              className="h-9 flex-1 whitespace-normal text-xs font-semibold bg-primary text-primary-foreground"
+            >
+              {savingDocumentConfig
+                ? 'Saving...'
+                : editingCustomRanges
+                  ? 'Save Range Rules'
+                  : 'Save Configuration'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {/* ================= TOP TOOLBAR (Single preview header for all documents) ================= */}
       <header className="h-12 bg-[#202124] border-b border-neutral-800 flex items-center justify-between px-3 shrink-0 z-20 text-neutral-300 text-xs shadow-md">
         {/* Left: Sidebar Toggle, Back Button, Order Identifier */}
@@ -1542,11 +2254,15 @@ export default function OrderPreviewPage() {
           <Button
             variant="ghost"
             size="icon"
-            onClick={handleDownload}
+            disabled={downloadingDocuments || documents.length === 0}
+            onClick={() => {
+              setSelectedDownloadDocumentIds(new Set());
+              setDownloadDialogOpen(true);
+            }}
             className="h-8 w-8 text-neutral-400 hover:text-white hover:bg-neutral-800 rounded"
-            title="Download Customer Source Document(s)"
+            title="Choose documents to download"
           >
-            <Download className="w-4 h-4" />
+            <Download className={`w-4 h-4 ${downloadingDocuments ? 'animate-pulse' : ''}`} />
           </Button>
 
           {/* Go For Print Button */}
@@ -1616,7 +2332,7 @@ export default function OrderPreviewPage() {
                       }`}
                     >
                       {item.isFirstPageOfDoc && (
-                        <div className="w-full text-[10px] font-mono text-primary font-bold mb-1.5 truncate border-b border-neutral-800 pb-0.5">
+                        <div className="w-full text-[11px] font-mono text-white font-bold mb-1.5 truncate border-b border-neutral-800 pb-0.5">
                           Doc #{item.docIndex + 1}: {item.docFileName}
                         </div>
                       )}
@@ -1678,7 +2394,13 @@ export default function OrderPreviewPage() {
 
                 {documents.map((doc, idx) => {
                   const cfg = doc.print_config || {};
-                  const isCustom = cfg.pageRangeType === 'Custom Range' && cfg.customRanges?.length > 0;
+                  const customRanges = getConfiguredCustomRanges(
+                    cfg,
+                    (doc as any).page_range || order?.page_range || (order as any)?.config_page_range
+                  );
+                  const isCustom =
+                    (cfg.pageRangeType === 'Custom Range' || customRanges.length > 0) &&
+                    customRanges.length > 0;
                   const isSelected = selectedConfigDocId === doc.id;
                   return (
                     <div
@@ -1708,27 +2430,27 @@ export default function OrderPreviewPage() {
                         <div className="space-y-1.5 pt-0.5">
                           <div className="flex items-center justify-between">
                             <span className="text-[10px] text-amber-400 font-semibold uppercase tracking-wide">
-                              Custom Ranges ({cfg.customRanges.length})
+                              Custom Ranges ({customRanges.length})
                             </span>
                             <span className="text-[9px] text-neutral-400 font-mono">
-                              Global Cards Disabled
+                              Edit rules with the pencil below
                             </span>
                           </div>
-                          {cfg.customRanges.map((rng: any, rIdx: number) => (
-                            <div
-                              key={rIdx}
-                              className="p-1.5 bg-neutral-800/80 rounded border border-neutral-700/50 text-[10px] flex items-center justify-between"
-                            >
-                              <span className="font-mono text-white font-bold">
-                                Pages {rng.fromPage}–{rng.toPage}:
-                              </span>
-                              <span className="text-neutral-300">
-                                {rng.printType || 'B&W'} • {rng.sides || 'Single Side'}
-                              </span>
-                            </div>
-                          ))}
-                          <p className="text-[9px] text-neutral-400 italic">
-                            Print Type &amp; Sides cards disabled — custom per-range parameters active.
+                          {customRanges.map((rng, rIdx) => (
+                                        <div
+                                          key={rIdx}
+                                          className="p-1.5 bg-neutral-800/80 rounded border border-neutral-700/50 text-[10px]"
+                                        >
+                                          <span className="font-mono text-white font-bold">
+                                            Pages {rng.fromPage}–{rng.toPage}:
+                                          </span>
+                                          <span className="ml-1 text-neutral-300">
+                                            {rng.printType || rng.color_mode || 'B&W'} • {rng.sides || rng.side || rng.duplex || 'Single Side'}
+                                          </span>
+                                        </div>
+                                      ))}
+                                      <p className="text-[9px] text-neutral-400 italic">
+                                        Per-range page, color, and print-side rules.
                           </p>
                         </div>
                       ) : (
@@ -1755,12 +2477,29 @@ export default function OrderPreviewPage() {
                       )}
 
                       <div className="text-[10px] text-neutral-400 border-t border-neutral-800/80 pt-1.5 flex items-center justify-between">
-                        <span>Copies: <strong className="text-primary">{cfg.copies || 1}</strong></span>
-                        <span>Total Pages: <strong className="text-neutral-200">{doc.total_pages || 1}</strong></span>
+                        <span>Copies: <strong className="text-[12px] text-white">{cfg.copies || 1}</strong></span>
+                        <span>Total Pages: <strong className="text-[12px] text-white">{doc.total_pages || 1}</strong></span>
                       </div>
 
-                      <div className="pt-1 text-[9px] font-mono text-neutral-400 text-center">
-                        {isSelected ? '✓ Showing this document preview' : 'Click to isolate preview'}
+                      <div className="flex items-center justify-between gap-2 pt-1">
+                        <span className="min-w-0 truncate text-[9px] font-mono text-neutral-400">
+                          {isSelected ? '✓ Showing this document preview' : 'Click to isolate preview'}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          disabled={printing}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openEditConfig(doc);
+                          }}
+                          className="h-8 w-8 shrink-0 border-neutral-500 bg-neutral-800 p-0 text-white hover:bg-neutral-700"
+                          title={isCustom ? 'Edit custom range rules' : 'Edit document print configuration'}
+                          aria-label={`Edit ${isCustom ? 'custom range rules' : 'print configuration'} for ${doc.file_name || `document ${idx + 1}`}`}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
                       </div>
                     </div>
                   );
@@ -1903,7 +2642,13 @@ export default function OrderPreviewPage() {
                   style={{ opacity: isRendered ? 1 : 0 }}
                 />
                 {!isRendered && (
-                  <div className="absolute inset-0 bg-neutral-200" />
+                  <div className="absolute inset-0 flex items-center justify-center bg-neutral-200 p-6 text-center">
+                    {previewErrors[item.docId] ? (
+                      <p className="max-w-md break-words text-xs text-red-700">{previewErrors[item.docId]}</p>
+                    ) : (
+                      <span className="text-sm text-neutral-500">Loading document preview...</span>
+                    )}
+                  </div>
                 )}
               </div>
               {/* Page Number & Document Footer Under Sheet */}
@@ -2145,6 +2890,83 @@ export default function OrderPreviewPage() {
               className="text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-bold shadow"
             >
               Configure Properties
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={downloadDialogOpen} onOpenChange={setDownloadDialogOpen}>
+        <DialogContent className="flex max-h-[calc(100dvh-2rem)] max-w-[calc(100%-2rem)] flex-col overflow-hidden bg-[#18191c] border-neutral-800 text-white p-5 rounded-2xl md:max-w-lg">
+          <DialogHeader className="space-y-1">
+            <DialogTitle className="text-sm font-heading font-bold text-white flex items-center gap-2">
+              <Download className="w-4 h-4 text-primary" />
+              Download order documents
+            </DialogTitle>
+            <DialogDescription className="text-xs text-neutral-400">
+              Tick the documents you want, or download every document in this order.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="min-h-0 flex-1 overflow-y-auto space-y-1 py-2">
+            {documents.map((doc, index) => {
+              const documentId = String(doc.id);
+              const isSelected = selectedDownloadDocumentIds.has(documentId);
+
+              return (
+                <label
+                  key={documentId}
+                  className="flex items-center gap-3 rounded-lg border border-neutral-800 px-3 py-2.5 hover:bg-neutral-800/70 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={(event) => {
+                      setSelectedDownloadDocumentIds((current) => {
+                        const next = new Set(current);
+                        if (event.target.checked) {
+                          next.add(documentId);
+                        } else {
+                          next.delete(documentId);
+                        }
+                        return next;
+                      });
+                    }}
+                    className="h-4 w-4 shrink-0 accent-primary"
+                  />
+                  <FileText className="h-4 w-4 shrink-0 text-neutral-400" />
+                  <span className="min-w-0 flex-1 truncate text-xs text-neutral-200">
+                    {doc.file_name || doc.name || `Document ${index + 1}`}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+
+          <DialogFooter className="grid shrink-0 grid-cols-2 gap-2 pt-3 border-t border-neutral-800 sm:grid-cols-3">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDownloadDialogOpen(false)}
+              className="w-full whitespace-normal px-2 text-xs border-neutral-700 text-neutral-800 hover:bg-neutral-800"
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={selectedDownloadDocumentIds.size === 0 || downloadingDocuments}
+              onClick={() => void handleDownload(false)}
+              className="w-full whitespace-normal px-2 text-xs border-neutral-700 text-neutral-800 hover:bg-neutral-800"
+            >
+              Download selected ({selectedDownloadDocumentIds.size})
+            </Button>
+            <Button
+              size="sm"
+              disabled={downloadingDocuments}
+              onClick={() => void handleDownload(true)}
+              className="col-span-2 w-full whitespace-normal px-2 text-xs bg-primary hover:bg-primary/90 text-primary-foreground font-bold sm:col-span-1"
+            >
+              Download all
             </Button>
           </DialogFooter>
         </DialogContent>
