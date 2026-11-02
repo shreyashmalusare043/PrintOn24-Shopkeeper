@@ -32,7 +32,7 @@ import {
   getShortDocumentRate,
   isPrintModeEligible,
 } from '@/utils/printPricing';
-import { isDuplexPrint, normalizePrintSides } from '@/utils/printSides';
+import { isDuplexPrint, normalizeDuplexMode } from '@/utils/printSides';
 import { localPrintAgent, type PrintJobPayload } from './localPrintAgent';
 import { isAllowedVirtualPrinter, isPhysicalPrinter } from './qzTrayService';
 import { supabase } from './supabase';
@@ -2376,7 +2376,7 @@ export const shopkeeperApi = {
           const fromP = Number(r.fromPage ?? r.from ?? r.startPage ?? r.start ?? 1);
           const toP = Number(r.toPage ?? r.to ?? r.endPage ?? r.end ?? fromP);
           const printType = r.printType || r.color_mode || r.colorMode || 'Black & White';
-          const sides = normalizePrintSides(r.sides || r.side || cfg?.sides || cfg?.duplex || order.config_sides);
+          const sides = normalizeDuplexMode(r.sides || r.side || cfg?.sides || cfg?.duplex || order.config_sides);
           return {
             id: r.id || `cr-${idx}`,
             fromPage: fromP,
@@ -2386,6 +2386,7 @@ export const shopkeeperApi = {
             printType,
             color_mode: printType,
             sides,
+            copies: Math.max(1, Number(r.copies) || Number(cfg?.copies) || 1),
             pageSize: r.pageSize || r.page_size || cfg?.pageSize || 'A4',
           };
         });
@@ -2398,7 +2399,7 @@ export const shopkeeperApi = {
         }
 
         const pageSize = cfg?.pageSize || cfg?.page_size || order.config_page_size || 'A4';
-        const sides = normalizePrintSides(cfg?.sides || cfg?.duplex || order.config_sides);
+        const sides = normalizeDuplexMode(cfg?.sides || cfg?.duplex || order.config_sides);
         const copies = cfg?.copies !== undefined ? Number(cfg.copies) : (order.config_copies ? Number(order.config_copies) : 1);
         const layout = cfg?.layout || cfg?.orientation || 'Portrait';
         const pagesPerSheet = cfg?.pagesPerSheet || cfg?.pages_per_sheet || '1-in-1';
@@ -2406,6 +2407,7 @@ export const shopkeeperApi = {
         const paperType = cfg?.paperType || cfg?.paper_type || order.config_paper_type || 'Normal';
 
         return {
+          ...cfg,
           pageRangeType,
           printType: colorMode,
           color_mode: colorMode,
@@ -2446,7 +2448,7 @@ export const shopkeeperApi = {
                 pages.push({
                   pageNum: p,
                   printType: r.printType || 'Black & White',
-                  sides: normalizePrintSides(r.sides || r.side || cfg.sides || cfg.duplex || order.config_sides),
+                  sides: normalizeDuplexMode(r.sides || r.side || cfg.sides || cfg.duplex || order.config_sides),
                   pageSize: r.pageSize || cfg.pageSize || 'A4',
                   isCustomRange: true,
                   rangeLabel: `Pages ${r.fromPage}–${r.toPage}`,
@@ -2470,7 +2472,7 @@ export const shopkeeperApi = {
             pages.push({
               pageNum: p,
               printType: cfg.printType || 'Black & White',
-              sides: normalizePrintSides(cfg.sides || cfg.duplex || order.config_sides),
+              sides: normalizeDuplexMode(cfg.sides || cfg.duplex || order.config_sides),
               pageSize: cfg.pageSize || 'A4',
               isCustomRange: false,
               rangeLabel: 'All Pages',
@@ -5059,6 +5061,32 @@ The merchant is solely responsible for credentials assigned to their counter sta
         console.error(`Failed to delete dynamic paper type "${id}":`, error);
         throw error;
       }
+    }
+
+    const { data: savedTypes, error: verifyError } = await supabase
+      .from('shop_dynamic_paper_types')
+      .select('id, name, is_active, bw_price, color_price')
+      .eq('shop_id', shopId);
+    if (verifyError) {
+      console.error('Failed to verify saved dynamic paper types:', verifyError);
+      throw verifyError;
+    }
+
+    const savedById = new Map((savedTypes || []).map((paper) => [paper.id, paper]));
+    const hasMissingOrUnpersistedType =
+      savedById.size !== types.length ||
+      types.some((paper) => {
+        const saved = savedById.get(paper.id);
+        return (
+          !saved ||
+          saved.name !== paper.name ||
+          saved.is_active !== paper.is_active ||
+          Number(saved.bw_price) !== Number(paper.bw_price) ||
+          Number(saved.color_price) !== Number(paper.color_price)
+        );
+      });
+    if (hasMissingOrUnpersistedType) {
+      throw new Error('The saved paper types could not be verified in the database. Please try again.');
     }
 
     return true;

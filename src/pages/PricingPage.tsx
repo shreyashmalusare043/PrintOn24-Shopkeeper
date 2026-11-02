@@ -141,7 +141,7 @@ export const PricingPage: React.FC = () => {
         shopkeeperApi.getSpecializedPaperColors(user.shop_id),
       ]);
       setPricing(data);
-      if (dTypes && dTypes.length > 0) setPaperTypes(dTypes);
+      setPaperTypes(dTypes);
       if (sColors && Object.keys(sColors).length > 0) setSpecializedColors(sColors);
     } catch {
       toast.error('Failed to load pricing table');
@@ -235,7 +235,7 @@ export const PricingPage: React.FC = () => {
     setSavingPaper(true);
     try {
       await shopkeeperApi.saveDynamicPaperTypes(user.shop_id, updated);
-      setPaperTypes(updated);
+      setPaperTypes(await shopkeeperApi.getDynamicPaperTypes(user.shop_id));
       setPaperModalOpen(false);
       toast.success(`Paper type "${normalizedName}" saved successfully!`);
     } catch (err) {
@@ -257,7 +257,7 @@ export const PricingPage: React.FC = () => {
     setSavingPaper(true);
     try {
       await shopkeeperApi.saveDynamicPaperTypes(user.shop_id, updated);
-      setPaperTypes(updated);
+      setPaperTypes(await shopkeeperApi.getDynamicPaperTypes(user.shop_id));
       toast.success('Paper availability status updated.');
     } catch (err) {
       console.error('Failed to update paper availability:', err);
@@ -284,7 +284,7 @@ export const PricingPage: React.FC = () => {
     setSavingPaper(true);
     try {
       await shopkeeperApi.saveDynamicPaperTypes(user.shop_id, updated);
-      setPaperTypes(updated);
+      setPaperTypes(await shopkeeperApi.getDynamicPaperTypes(user.shop_id));
       toast.success(`Print eligibility for ${paper.name} updated.`);
     } catch (err) {
       console.error('Failed to update paper print eligibility:', err);
@@ -319,7 +319,7 @@ export const PricingPage: React.FC = () => {
     setSavingPaper(true);
     try {
       await shopkeeperApi.saveDynamicPaperTypes(user.shop_id, updated);
-      setPaperTypes(updated);
+      setPaperTypes(await shopkeeperApi.getDynamicPaperTypes(user.shop_id));
       toast.success(`Paper size/type "${paper.name}" deleted from database.`);
     } catch (err) {
       console.error('Failed to delete paper type:', err);

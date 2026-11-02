@@ -95,7 +95,7 @@ export const PrinterPropertiesDialog: React.FC<PrinterPropertiesDialogProps> = (
     currentSettings.equalMargins !== undefined ? currentSettings.equalMargins : true
   );
 
-  // Sync when dialog opens or printer changes
+  // Sync settings only when the dialog scope or applied settings change.
   useEffect(() => {
     if (open) {
       if (selectedPrinter) {
@@ -112,8 +112,25 @@ export const PrinterPropertiesDialog: React.FC<PrinterPropertiesDialogProps> = (
       if (currentSettings.copies) setCopies(currentSettings.copies);
       if (currentSettings.mediaSource) setMediaSource(currentSettings.mediaSource);
       if (currentSettings.mediaType) setMediaType(currentSettings.mediaType);
+      if (currentSettings.dpi) setDpi(currentSettings.dpi);
+      if (currentSettings.equalMargins !== undefined) setEqualMargins(currentSettings.equalMargins);
     }
-  }, [open, selectedPrinter, printers, currentSettings]);
+  }, [
+    open,
+    selectedPrinter?.id,
+    printers[0]?.id,
+    currentSettings.paperSize,
+    currentSettings.outputSize,
+    currentSettings.orientation,
+    currentSettings.mediaSource,
+    currentSettings.mediaType,
+    currentSettings.colorMode,
+    currentSettings.duplex,
+    currentSettings.scaling,
+    currentSettings.copies,
+    currentSettings.dpi,
+    currentSettings.equalMargins,
+  ]);
 
   // Available paper sizes based on printer capabilities
   const supportedPaperSizes =
