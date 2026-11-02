@@ -1034,7 +1034,7 @@ export const shopkeeperApi = {
       is_color: printer.is_color !== undefined ? printer.is_color : true,
       is_duplex: printer.is_duplex !== undefined ? printer.is_duplex : true,
       paper_sizes: printer.paper_sizes || ['A4'],
-      paper_types: printer.paper_types || ['Standard 75 GSM'],
+      paper_types: printer.paper_types || [],
       capabilities: printer.capabilities || {
         bw: true,
         color: !!printer.is_color,
@@ -1072,7 +1072,7 @@ export const shopkeeperApi = {
           is_duplex: !!printer.is_duplex,
           usage_type: printer.usage_type || 'All',
           paper_sizes: printer.paper_sizes || ['A4'],
-          paper_types: printer.paper_types || ['Standard 75 GSM'],
+          paper_types: printer.paper_types || [],
           capabilities: printer.capabilities || {
             bw: true,
             color: !!printer.is_color,
@@ -2843,14 +2843,17 @@ export const shopkeeperApi = {
     allEvaluations: Array<{ printer: ShopPrinter; isCompatible: boolean; reasons: string[] }>;
     reasonIfNotCompatible?: string;
   } {
-    const configToMatch = specificDocConfig || {
-      pageSize: order.config_page_size,
-      page_size: order.config_page_size,
-      paperType: order.config_paper_type,
-      paper_type: order.config_paper_type,
-      printType: order.config_print_type,
-      color_mode: order.config_print_type,
-      sides: order.config_sides,
+    const config = specificDocConfig || {};
+    const configToMatch = {
+      ...config,
+      pageSize: config.pageSize || config.page_size || order.config_page_size || 'A4',
+      page_size: config.page_size || config.pageSize || order.config_page_size || 'A4',
+      paperType: config.paperType || config.paper_type || order.config_paper_type,
+      paper_type: config.paper_type || config.paperType || order.config_paper_type,
+      printType: config.printType || config.color_mode || order.config_print_type,
+      color_mode: config.color_mode || config.printType || order.config_print_type,
+      sides: config.sides || config.duplex || order.config_sides || 'Single Side',
+      customRanges: config.customRanges || config.custom_ranges || [],
     };
 
     const physicalOnly = printers.filter((p) => isPhysicalPrinter(p.name) || isAllowedVirtualPrinter(p.name));

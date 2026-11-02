@@ -95,7 +95,7 @@ export const PrintersPage: React.FC = () => {
   const [formColorMode, setFormColorMode] = useState<'bw' | 'color' | 'both'>('both');
   const [formSideMode, setFormSideMode] = useState<'both' | 'single' | 'duplex'>('both');
   const [formPaperSizes, setFormPaperSizes] = useState<string[]>(['A4']);
-  const [formPaperTypes, setFormPaperTypes] = useState<string[]>(['Standard 75 GSM']);
+  const [formPaperTypes, setFormPaperTypes] = useState<string[]>([]);
   const [formAssignedPcId, setFormAssignedPcId] = useState<string>('');
   const [formStatus, setFormStatus] = useState<'online' | 'offline'>('online');
   const [savingPrinter, setSavingPrinter] = useState<boolean>(false);
@@ -108,7 +108,7 @@ export const PrintersPage: React.FC = () => {
   const [virtualColorMode, setVirtualColorMode] = useState<'both' | 'color' | 'bw'>('both');
   const [virtualDuplex, setVirtualDuplex] = useState<boolean>(true);
   const [virtualPaperSizes, setVirtualPaperSizes] = useState<string[]>(['A4', 'Legal']);
-  const [virtualPaperTypes, setVirtualPaperTypes] = useState<string[]>(['Standard 75 GSM']);
+  const [virtualPaperTypes, setVirtualPaperTypes] = useState<string[]>([]);
   const [savingVirtual, setSavingVirtual] = useState<boolean>(false);
 
   // EDIT PRINTER MODAL
@@ -117,7 +117,7 @@ export const PrintersPage: React.FC = () => {
   const [editColorMode, setEditColorMode] = useState<'both' | 'color' | 'bw'>('both');
   const [editSideMode, setEditSideMode] = useState<'both' | 'single' | 'duplex'>('both');
   const [editPaperSizes, setEditPaperSizes] = useState<string[]>(['A4']);
-  const [editPaperTypes, setEditPaperTypes] = useState<string[]>(['Standard 75 GSM']);
+  const [editPaperTypes, setEditPaperTypes] = useState<string[]>([]);
 
   const activePc = pcs.find((p) => p.id === selectedPcId) || pcs[0];
 
@@ -184,7 +184,7 @@ export const PrintersPage: React.FC = () => {
     setFormColorMode('both');
     setFormSideMode('both');
     setFormPaperSizes(['A4']);
-    setFormPaperTypes(['Standard 75 GSM']);
+    setFormPaperTypes([]);
     setAddModalOpen(true);
     await loadDetectedPrintersFromAgent();
   };
@@ -216,7 +216,7 @@ export const PrintersPage: React.FC = () => {
       setFormColorMode(found.is_color ? 'color' : 'bw');
       setFormSideMode(found.is_duplex ? 'both' : 'single');
       setFormPaperSizes(found.paper_sizes?.length ? found.paper_sizes : ['A4']);
-      setFormPaperTypes(found.paper_types?.length ? found.paper_types : ['Standard 75 GSM']);
+      setFormPaperTypes([]);
     } else {
       setFormPrinterName('');
       setFormModel('');
@@ -313,7 +313,7 @@ export const PrintersPage: React.FC = () => {
     setEditPaperTypes(
       printer.paper_types && printer.paper_types.length > 0
         ? [...printer.paper_types]
-        : ['Standard 75 GSM']
+        : []
     );
     setEditModalOpen(true);
   };
