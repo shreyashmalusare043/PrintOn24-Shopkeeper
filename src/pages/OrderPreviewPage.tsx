@@ -14,6 +14,7 @@ import {
   Pencil,
   Printer,
   RefreshCw,
+  RotateCcw,
   RotateCw,
   SlidersHorizontal,
   Sparkles,
@@ -61,7 +62,7 @@ import type { PrintedSegment, PrintOrder, ShopPrinter } from '@/types/shopkeeper
 import { buildCollatedPrintRuns } from '@/utils/collatedPrintRuns';
 import { getConfiguredCustomRanges } from '@/utils/documentPrintConfig';
 import { computeDocumentPageStatuses, getUnprintedSubRanges } from '@/utils/printRangeUtils';
-import { isDuplexPrint, normalizeDuplexMode, normalizePrintSides } from '@/utils/printSides';
+import { isDuplexPrint, normalizeDuplexMode, type DuplexMode } from '@/utils/printSides';
 
 interface UnifiedPreviewPage {
   key: string;
@@ -96,6 +97,7 @@ interface EditableCustomRange {
   pageRange: string;
   printType: 'Color' | 'Black & White';
   sides: 'Single Side' | 'Back-to-Back';
+  copies: number;
 }
 
 const parseSelectedPageRange = (
@@ -248,13 +250,26 @@ export default function OrderPreviewPage() {
 
       const common = docDriverSettings['all'] || driverSettings;
       const specific = docId && docId !== 'all' ? docDriverSettings[docId] : undefined;
+      const scopedCopies = (targetDoc ? [targetDoc] : documents).map((doc) => {
+        const docConfig = doc.print_config || {};
+        const rangeCopies = getConfiguredCustomRanges(docConfig, (doc as any).page_range)
+          .map((range) => Math.max(1, Number(range.copies) || Number(docConfig.copies) || 1));
+        const uniqueRangeCopies = [...new Set(rangeCopies)];
+        return uniqueRangeCopies.length === 1
+          ? uniqueRangeCopies[0]
+          : Number(docConfig.copies) || 1;
+      });
+      const uniqueScopedCopies = [...new Set(scopedCopies)];
+      const configuredDocumentCopies = uniqueScopedCopies.length === 1
+        ? uniqueScopedCopies[0]
+        : targetDoc?.print_config?.copies;
 
       // Independent document properties: ensure document config is NEVER overwritten by global settings or other documents
       const effectiveCopies =
         specific?.copies !== undefined
           ? Number(specific.copies)
-          : targetDoc?.print_config?.copies !== undefined
-          ? Number(targetDoc.print_config.copies)
+          : configuredDocumentCopies !== undefined
+          ? Number(configuredDocumentCopies)
           : (order?.config_copies ? Number(order.config_copies) : 1);
 
       const effectivePaper =
@@ -272,19 +287,14 @@ export default function OrderPreviewPage() {
         specific?.orientation ??
         (targetDoc ? docAutoOrientation : (common.orientation || 'Portrait'));
 
-      const explicitlyConfiguredDuplex = specific?.duplex ?? common.duplex;
+      const explicitlyConfiguredDuplex = specific?.duplex ?? (targetDoc ? undefined : common.duplex);
       const inheritedDuplex =
         explicitlyConfiguredDuplex ??
         targetDoc?.print_config?.sides ??
         targetDoc?.print_config?.duplex ??
         order?.config_sides;
       const normalizedDuplex = normalizeDuplexMode(inheritedDuplex);
-      const effectiveDuplex =
-        explicitlyConfiguredDuplex === undefined &&
-        effectiveOrientation === 'Landscape' &&
-        isDuplexPrint(normalizedDuplex)
-          ? 'Tumble'
-          : normalizedDuplex;
+      const effectiveDuplex = normalizedDuplex;
 
       return {
         ...common,
@@ -427,7 +437,7 @@ export default function OrderPreviewPage() {
         orientation: isLand ? 'Landscape' : (orientationValue ? 'Portrait' : undefined),
         copies: result.order.config_copies || 1,
         colorMode: String(result.order.config_print_type || '').toLowerCase().includes('color') ? 'Color' : 'B&W',
-        duplex: normalizePrintSides(result.order.config_sides),
+        duplex: normalizeDuplexMode(result.order.config_sides),
         mediaType: result.order.config_paper_type || 'Standard 75 GSM',
         scaling: 'fit',
       });
@@ -665,11 +675,11 @@ export default function OrderPreviewPage() {
               qualifying.push({
                 pageNum: p,
                 printType: r.printType || cfg.printType || 'Black & White',
-                sides: normalizePrintSides(r.sides || r.side || cfg.sides || cfg.duplex || order?.config_sides),
+                sides: normalizeDuplexMode(r.sides || r.side || cfg.sides || cfg.duplex || order?.config_sides),
                 pageSize: r.pageSize || cfg.pageSize || 'A4',
                 paperType: cfg.paperType || 'Normal',
                 layout: cfg.layout || 'Portrait',
-                copies: Number(cfg.copies) || 1,
+                copies: Math.max(1, Number(r.copies) || Number(cfg.copies) || 1),
                 isCustomRange: true,
                 rangeLabel: `Pages ${r.fromPage}–${r.toPage}`,
               });
@@ -687,7 +697,7 @@ export default function OrderPreviewPage() {
           qualifying.push({
             pageNum: p,
             printType: cfg.printType || 'Black & White',
-            sides: normalizePrintSides(cfg.sides || cfg.duplex || order?.config_sides),
+            sides: normalizeDuplexMode(cfg.sides || cfg.duplex || order?.config_sides),
             pageSize: cfg.pageSize || 'A4',
             paperType: cfg.paperType || 'Normal',
             layout: cfg.layout || 'Portrait',
@@ -1124,7 +1134,7 @@ export default function OrderPreviewPage() {
         docUrl: string;
         pageRange?: string;
         colorMode: 'B&W' | 'Color';
-        duplex: 'Single Side' | 'Back-to-Back';
+        duplex: DuplexMode;
         pageSize: any;
         paperType: any;
         copies: number;
@@ -1194,13 +1204,13 @@ export default function OrderPreviewPage() {
                 pageSize: r.pageSize || cfg.pageSize || 'A4',
                 printType: r.printType,
                 color_mode: r.printType,
-                sides: normalizePrintSides(r.sides || r.side || cfg.sides || cfg.duplex || order?.config_sides),
-                copies: Number(cfg.copies) || 1,
+                sides: normalizeDuplexMode(r.sides || r.side || cfg.sides || cfg.duplex || order?.config_sides),
+                copies: Math.max(1, Number(r.copies) || Number(cfg.copies) || 1),
               };
 
               const matchResult = shopkeeperApi.findCompatiblePrinterForOrder(order, onlinePrinters, rangeConfig);
               const isColor = (r.printType || '').toLowerCase().includes('color');
-              const rangeSides = normalizePrintSides(r.sides || r.side || cfg.sides || cfg.duplex || order.config_sides);
+              const rangeSides = normalizeDuplexMode(r.sides || r.side || cfg.sides || cfg.duplex || order.config_sides);
               const isDuplex = isDuplexPrint(rangeSides);
               const pageRangeStr = `${subR.fromPage}-${subR.toPage}`;
 
@@ -1221,7 +1231,7 @@ export default function OrderPreviewPage() {
                   duplex: rangeSides,
                   pageSize: rangeConfig.pageSize,
                   paperType: cfg.paperType || 'Standard 75 GSM',
-                  copies: Number(cfg.copies) || 1,
+                  copies: Math.max(1, Number(r.copies) || Number(cfg.copies) || 1),
                   pageCount: Math.max(1, subR.toPage - subR.fromPage + 1),
                   pageNumbers: Array.from(
                     { length: Math.max(1, subR.toPage - subR.fromPage + 1) },
@@ -1248,7 +1258,7 @@ export default function OrderPreviewPage() {
             continue; // All pages already printed - zero reprint guarantee
           }
 
-          const effectiveSides = normalizePrintSides(cfg.sides || cfg.duplex || order.config_sides);
+          const effectiveSides = normalizeDuplexMode(cfg.sides || cfg.duplex || order.config_sides);
           const matchResult = shopkeeperApi.findCompatiblePrinterForOrder(order, onlinePrinters, {
             ...cfg,
             sides: effectiveSides,
@@ -1354,15 +1364,9 @@ export default function OrderPreviewPage() {
         const explicitlyConfiguredDuplex =
           docDriverSettings[plan.docId]?.duplex ??
           docDriverSettings.all?.duplex ??
-          driverSettings.duplex;
+          (!plan.isCustomRange ? driverSettings.duplex : undefined);
         const normalizedDuplex = normalizeDuplexMode(explicitlyConfiguredDuplex ?? plan.duplex);
-        const targetDuplex = plan.isCustomRange
-          ? normalizeDuplexMode(plan.duplex)
-          : explicitlyConfiguredDuplex === undefined &&
-              targetOrientation === 'Landscape' &&
-              isDuplexPrint(normalizedDuplex)
-            ? 'Tumble'
-            : normalizedDuplex;
+        const targetDuplex = normalizedDuplex;
 
         // Item 5: Manual Duplex confirmation if printer requires manual reinsertion
         const printerDriver = plan.matchedPrinter.driver_name?.toLowerCase() || '';
@@ -1617,6 +1621,7 @@ export default function OrderPreviewPage() {
           sides: rangeSides.includes('back') || rangeSides.includes('double') || rangeSides.includes('duplex') || rangeSides.includes('tumble')
             ? 'Back-to-Back'
             : 'Single Side',
+          copies: Math.max(1, Number(range.copies) || Number(config.copies) || 1),
         };
       })
     );
@@ -1649,6 +1654,57 @@ export default function OrderPreviewPage() {
     setEditingConfigDocumentId(doc.id);
   };
 
+  const persistDocumentConfig = async (
+    doc: (typeof documents)[number],
+    nextConfig: Record<string, unknown>
+  ) => {
+    const { error: documentError } = await supabase
+      .from('uploaded_documents')
+      .update({ print_config: nextConfig })
+      .eq('id', doc.id);
+    if (documentError) throw documentError;
+
+    const updatedDocumentsConfig = order && Array.isArray(order.documents_config)
+      ? order.documents_config.map((config: any) =>
+          config.id === doc.id || config.document_id === doc.id
+            ? { ...config, ...nextConfig, config: nextConfig }
+            : config
+        )
+      : order?.documents_config;
+    if (order && Array.isArray(updatedDocumentsConfig)) {
+      const { error: orderError } = await supabase
+        .from('print_orders')
+        .update({ documents_config: updatedDocumentsConfig })
+        .eq('id', order.id);
+      if (orderError) throw orderError;
+    }
+
+    setDocuments((currentDocuments) =>
+      currentDocuments.map((currentDoc) =>
+        currentDoc.id === doc.id ? { ...currentDoc, print_config: nextConfig } : currentDoc
+      )
+    );
+    setDocDriverSettings((currentSettings) => {
+      const currentDocumentSettings = currentSettings[doc.id];
+      if (!currentDocumentSettings) return currentSettings;
+      return {
+        ...currentSettings,
+        [doc.id]: {
+          ...currentDocumentSettings,
+          copies: Math.max(1, Number(nextConfig.copies) || 1),
+        },
+      };
+    });
+    setOrder((currentOrder) =>
+      currentOrder
+        ? {
+            ...currentOrder,
+            documents_config: updatedDocumentsConfig,
+          }
+        : currentOrder
+    );
+  };
+
   const saveEditedDocumentConfig = async () => {
     if (!order || !editingConfigDocumentId) return;
     const doc = documents.find((document) => document.id === editingConfigDocumentId);
@@ -1664,11 +1720,6 @@ export default function OrderPreviewPage() {
     const rangeText = editConfigPageRange.trim();
     let configRanges: Array<Record<string, string | number>> = [];
     if (editingCustomRanges) {
-      if (editConfigRangeRules.length === 0) {
-        setEditConfigPageRangeError('Add at least one custom range before saving.');
-        return;
-      }
-
       const occupiedPages = new Set<number>();
       for (let ruleIndex = 0; ruleIndex < editConfigRangeRules.length; ruleIndex += 1) {
         const rule = editConfigRangeRules[ruleIndex];
@@ -1704,6 +1755,7 @@ export default function OrderPreviewPage() {
             color_mode: rule.printType,
             sides: rule.sides,
             duplex: rule.sides,
+            copies: Math.max(1, Number(rule.copies) || 1),
             pageSize: doc.print_config?.pageSize || 'A4',
           }))
         );
@@ -1739,9 +1791,26 @@ export default function OrderPreviewPage() {
         fromPage === toPage ? String(fromPage) : `${fromPage}-${toPage}`
       )
       .join(', ');
-    const nextConfig = editingCustomRanges
+    const currentConfig = doc.print_config || {};
+    const defaultPrintConfig =
+      currentConfig.defaultPrintConfig &&
+      typeof currentConfig.defaultPrintConfig === 'object' &&
+      !Array.isArray(currentConfig.defaultPrintConfig)
+        ? currentConfig.defaultPrintConfig
+        : Object.fromEntries(
+            Object.entries(currentConfig).filter(([key]) => key !== 'defaultPrintConfig')
+          );
+    const resettingCustomRanges = editingCustomRanges && configRanges.length === 0;
+    const customRangeCopyCounts = [...new Set(
+      configRanges.map((range) => Math.max(1, Number(range.copies) || 1))
+    )];
+    const nextConfig = editingCustomRanges && !resettingCustomRanges
       ? {
-          ...(doc.print_config || {}),
+          ...currentConfig,
+          defaultPrintConfig,
+          copies: customRangeCopyCounts.length === 1
+            ? customRangeCopyCounts[0]
+            : Math.max(1, Number(currentConfig.copies) || 1),
           pageRangeType: 'Custom Range',
           pageRange: savedRangeText,
           selectedPageRange: savedRangeText,
@@ -1749,7 +1818,8 @@ export default function OrderPreviewPage() {
           custom_ranges: configRanges,
         }
       : {
-          ...(doc.print_config || {}),
+            ...currentConfig,
+            defaultPrintConfig,
             copies: Math.max(1, Number(editConfigCopies) || 1),
             printType: editConfigPrintType,
             color_mode: editConfigPrintType,
@@ -1763,49 +1833,20 @@ export default function OrderPreviewPage() {
             layout: editConfigOrientation,
             pagesPerSheet: editConfigPagesPerSheet,
             pages_per_sheet: editConfigPagesPerSheet,
-            pageRangeType: configRanges.length > 0 ? 'Custom Range' : 'All Pages',
-            pageRange: rangeText || 'All Pages',
-            selectedPageRange: rangeText || 'All Pages',
+            pageRangeType: resettingCustomRanges
+              ? 'All Pages'
+              : configRanges.length > 0
+                ? 'Custom Range'
+                : 'All Pages',
+            pageRange: resettingCustomRanges ? 'All Pages' : rangeText || 'All Pages',
+            selectedPageRange: resettingCustomRanges ? 'All Pages' : rangeText || 'All Pages',
             customRanges: configRanges,
             custom_ranges: configRanges,
         };
 
     setSavingDocumentConfig(true);
     try {
-      const { error: documentError } = await supabase
-        .from('uploaded_documents')
-        .update({ print_config: nextConfig })
-        .eq('id', doc.id);
-      if (documentError) throw documentError;
-
-      const updatedDocumentsConfig = Array.isArray(order.documents_config)
-        ? order.documents_config.map((config: any) =>
-            config.id === doc.id || config.document_id === doc.id
-              ? { ...config, ...nextConfig }
-              : config
-          )
-        : order.documents_config;
-      if (Array.isArray(updatedDocumentsConfig)) {
-        const { error: orderError } = await supabase
-          .from('print_orders')
-          .update({ documents_config: updatedDocumentsConfig })
-          .eq('id', order.id);
-        if (orderError) throw orderError;
-      }
-
-      setDocuments((currentDocuments) =>
-        currentDocuments.map((currentDoc) =>
-          currentDoc.id === doc.id ? { ...currentDoc, print_config: nextConfig } : currentDoc
-        )
-      );
-      setOrder((currentOrder) =>
-        currentOrder
-          ? {
-              ...currentOrder,
-              documents_config: updatedDocumentsConfig,
-            }
-          : currentOrder
-      );
+      await persistDocumentConfig(doc, nextConfig);
       setEditingConfigDocumentId(null);
       setEditingCustomRanges(false);
       toast.success(`Configuration updated for ${doc.file_name || 'document'}.`);
@@ -1814,6 +1855,191 @@ export default function OrderPreviewPage() {
       toast.error(error instanceof Error ? error.message : 'Failed to update document configuration.');
     } finally {
       setSavingDocumentConfig(false);
+    }
+  };
+
+  const resetEditedDocumentConfig = async () => {
+    if (!order || !editingConfigDocumentId) return;
+    const doc = documents.find((document) => document.id === editingConfigDocumentId);
+    if (!doc) {
+      toast.error('The selected document is no longer available.');
+      return;
+    }
+
+    const config = doc.print_config || {};
+    const savedDefault = config.defaultPrintConfig;
+    const hasSavedDefault =
+      savedDefault && typeof savedDefault === 'object' && !Array.isArray(savedDefault);
+    if (!hasSavedDefault && !editingCustomRanges) {
+      toast.error('No original configuration is saved for this document yet.');
+      return;
+    }
+
+    const defaultConfig = hasSavedDefault
+      ? (savedDefault as Record<string, unknown>)
+      : Object.fromEntries(
+          Object.entries(config).filter(([key]) => key !== 'defaultPrintConfig')
+        );
+    const defaultRanges =
+      (hasSavedDefault && Array.isArray(defaultConfig.customRanges) && defaultConfig.customRanges) ||
+      (hasSavedDefault && Array.isArray(defaultConfig.custom_ranges) && defaultConfig.custom_ranges) ||
+      [];
+    const resetToAllPages = editingCustomRanges;
+    const pageRange = hasSavedDefault && !resetToAllPages
+      ? String(
+          defaultConfig.selectedPageRange ||
+            defaultConfig.page_range ||
+            defaultConfig.pageRange ||
+            doc.page_range ||
+            'All Pages'
+        )
+      : 'All Pages';
+    const resetConfig = {
+      ...defaultConfig,
+      defaultPrintConfig: defaultConfig,
+      pageRangeType: resetToAllPages
+        ? 'All Pages'
+        : hasSavedDefault
+        ? defaultConfig.pageRangeType || (defaultRanges.length > 0 ? 'Custom Range' : 'All Pages')
+        : 'All Pages',
+      pageRange,
+      selectedPageRange: pageRange,
+      customRanges: resetToAllPages ? [] : defaultRanges,
+      custom_ranges: resetToAllPages ? [] : defaultRanges,
+    };
+
+    setSavingDocumentConfig(true);
+    try {
+      await persistDocumentConfig(doc, resetConfig);
+      setEditingConfigDocumentId(null);
+      setEditingCustomRanges(false);
+      toast.success(
+        resetToAllPages
+          ? `Custom rules cleared. All pages restored for ${doc.file_name || 'document'}.`
+          : `Configuration reset for ${doc.file_name || 'document'}.`
+      );
+    } catch (error) {
+      console.error('Failed to reset document print configuration:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to reset document configuration.');
+    } finally {
+      setSavingDocumentConfig(false);
+    }
+  };
+
+  const applyPrinterProperties = async (newProps: PrinterDriverSettings) => {
+    const targetDocuments = targetPropertyDocId === 'all'
+      ? documents
+      : documents.filter((doc) => doc.id === targetPropertyDocId);
+    if (targetDocuments.length === 0) {
+      toast.error('The selected document is no longer available.');
+      return;
+    }
+
+    try {
+      const updatedConfigs = new Map<string, Record<string, unknown>>();
+      for (const doc of targetDocuments) {
+        const config = doc.print_config || {};
+        const customRanges = getConfiguredCustomRanges(config, (doc as any).page_range).map((range) => ({
+          ...range,
+          copies: newProps.copies,
+          sides: newProps.duplex,
+          duplex: newProps.duplex,
+        }));
+        updatedConfigs.set(doc.id, {
+          ...config,
+          copies: newProps.copies,
+          pageSize: newProps.paperSize,
+          page_size: newProps.paperSize,
+          orientation: newProps.orientation || config.orientation || 'Portrait',
+          layout: newProps.orientation || config.layout || 'Portrait',
+          sides: newProps.duplex,
+          duplex: newProps.duplex,
+          paperType: newProps.mediaType,
+          paper_type: newProps.mediaType,
+          ...(newProps.colorMode ? {
+            printType: newProps.colorMode === 'Color' ? 'Color' : 'Black & White',
+            color_mode: newProps.colorMode === 'Color' ? 'Color' : 'Black & White',
+          } : {}),
+          customRanges,
+          custom_ranges: customRanges,
+        });
+      }
+
+      if (targetPropertyDocId === 'all') {
+        const updateResults = await Promise.all(
+          targetDocuments.map((doc) =>
+            supabase
+              .from('uploaded_documents')
+              .update({ print_config: updatedConfigs.get(doc.id) })
+              .eq('id', doc.id)
+          )
+        );
+        const failedUpdate = updateResults.find((result) => result.error);
+        if (failedUpdate?.error) throw failedUpdate.error;
+
+        const updatedDocumentsConfig = Array.isArray(order?.documents_config)
+          ? order.documents_config.map((config: any) => {
+              const documentId = config.id || config.document_id;
+              const nextConfig = updatedConfigs.get(documentId);
+              return nextConfig
+                ? { ...config, ...nextConfig, config: nextConfig }
+                : config;
+            })
+          : order?.documents_config;
+        if (order && Array.isArray(updatedDocumentsConfig)) {
+          const { error } = await supabase
+            .from('print_orders')
+            .update({ documents_config: updatedDocumentsConfig })
+            .eq('id', order.id);
+          if (error) throw error;
+        }
+
+        setDocuments((currentDocuments) =>
+          currentDocuments.map((doc) => {
+            const nextConfig = updatedConfigs.get(doc.id);
+            return nextConfig ? { ...doc, print_config: nextConfig } : doc;
+          })
+        );
+        setOrder((currentOrder) =>
+          currentOrder
+            ? { ...currentOrder, documents_config: updatedDocumentsConfig }
+            : currentOrder
+        );
+      } else {
+        const doc = targetDocuments[0];
+        const nextConfig = updatedConfigs.get(doc.id);
+        if (nextConfig) await persistDocumentConfig(doc, nextConfig);
+      }
+
+      if (targetPropertyDocId === 'all') {
+        setDriverSettings(newProps);
+        setDocDriverSettings((current) => {
+          const updated: Record<string, Partial<PrinterDriverSettings>> = {
+            ...current,
+            all: newProps,
+          };
+          targetDocuments.forEach((doc) => {
+            updated[doc.id] = newProps;
+          });
+          return updated;
+        });
+      } else {
+        setDocDriverSettings((current) => ({
+          ...current,
+          [targetPropertyDocId]: newProps,
+        }));
+      }
+
+      if (newProps.printerId) {
+        const chosenPrinter = availablePrinters.find((printer) => printer.id === newProps.printerId);
+        if (chosenPrinter) setMatchedShopPrinter(chosenPrinter);
+      }
+      toast.success(
+        `Properties applied (${targetPropertyDocId === 'all' ? 'All Documents' : 'Selected Document'}): ${newProps.paperSize || 'Current Paper'}, ${newProps.orientation || 'Original Orientation'}, ${newProps.copies} ${newProps.copies === 1 ? 'copy' : 'copies'}, Scaling: ${newProps.scaling || 'fit'}.`
+      );
+    } catch (error) {
+      console.error('Failed to apply printer properties:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to save printer properties.');
     }
   };
 
@@ -1904,23 +2130,53 @@ export default function OrderPreviewPage() {
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-2 text-xs">
             {editingCustomRanges ? (
               <>
+                {editConfigRangeRules.length === 0 && (
+                  <p className="rounded-lg border border-border bg-muted/30 p-3 text-muted-foreground">
+                    No custom rules remain. Saving will restore this PDF to all pages.
+                  </p>
+                )}
                 {editConfigRangeRules.map((rule, index) => (
                   <div key={index} className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
                     <div className="flex items-center justify-between">
                       <span className="font-semibold text-foreground">Rule {index + 1}</span>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        disabled={editConfigRangeRules.length <= 1}
-                        onClick={() => {
-                          setEditConfigRangeRules((current) => current.filter((_, ruleIndex) => ruleIndex !== index));
-                          setEditConfigPageRangeError(null);
-                        }}
-                        className="h-7 px-2 text-[10px]"
-                      >
-                        Remove
-                      </Button>
+                      <div className="flex items-center gap-1.5">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={savingDocumentConfig}
+                          onClick={() => {
+                            setEditConfigRangeRules((current) => {
+                              const copiedRule = { ...current[index], pageRange: '' };
+                              return [
+                                ...current.slice(0, index + 1),
+                                copiedRule,
+                                ...current.slice(index + 1),
+                              ];
+                            });
+                            setEditConfigPageRangeError(null);
+                          }}
+                          className="h-7 gap-1 px-2 text-[10px]"
+                          title="Copy this rule, including its copy count, into a new rule"
+                        >
+                          <Copy className="h-3 w-3" />
+                          Copy
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={savingDocumentConfig}
+                          onClick={() => {
+                            setEditConfigRangeRules((current) => current.filter((_, ruleIndex) => ruleIndex !== index));
+                            setEditConfigPageRangeError(null);
+                          }}
+                          className="h-7 px-2 text-[10px]"
+                          title="Remove this rule. Removing the last rule restores all pages."
+                        >
+                          Remove
+                        </Button>
+                      </div>
                     </div>
                     <div className="space-y-1">
                       <Label htmlFor={`custom-range-pages-${index}`} className="text-xs font-semibold text-foreground">
@@ -1941,7 +2197,29 @@ export default function OrderPreviewPage() {
                         className="h-9 w-full rounded-lg border border-border bg-background px-3 text-xs font-mono text-foreground"
                       />
                     </div>
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                      <div className="space-y-1">
+                        <Label htmlFor={`custom-range-copies-${index}`} className="text-xs font-semibold text-foreground">
+                          Number of Copies
+                        </Label>
+                        <input
+                          id={`custom-range-copies-${index}`}
+                          type="number"
+                          min={1}
+                          max={100}
+                          value={rule.copies}
+                          onChange={(event) =>
+                            setEditConfigRangeRules((current) =>
+                              current.map((item, ruleIndex) =>
+                                ruleIndex === index
+                                  ? { ...item, copies: Math.max(1, Number(event.target.value) || 1) }
+                                  : item
+                              )
+                            )
+                          }
+                          className="h-9 w-full rounded-lg border border-border bg-background px-3 text-xs font-mono text-foreground"
+                        />
+                      </div>
                       <div className="space-y-1">
                         <Label htmlFor={`custom-range-color-${index}`} className="text-xs font-semibold text-foreground">
                           Color Type
@@ -1996,7 +2274,12 @@ export default function OrderPreviewPage() {
                   onClick={() => {
                     setEditConfigRangeRules((current) => [
                       ...current,
-                      { pageRange: '', printType: 'Black & White', sides: 'Single Side' },
+                      {
+                        pageRange: '',
+                        printType: 'Black & White',
+                        sides: 'Single Side',
+                        copies: current[current.length - 1]?.copies || 1,
+                      },
                     ]);
                     setEditConfigPageRangeError(null);
                   }}
@@ -2088,6 +2371,29 @@ export default function OrderPreviewPage() {
                     </select>
                   </div>
                 </div>
+                <div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={savingDocumentConfig}
+                    onClick={() => {
+                      setEditConfigRangeRules([{
+                        pageRange: editConfigPageRange.trim(),
+                        printType: editConfigPrintType,
+                        sides: editConfigSides,
+                        copies: editConfigCopies,
+                      }]);
+                      setEditingCustomRanges(true);
+                      setEditConfigPageRangeError(null);
+                    }}
+                    className="w-full"
+                  >
+                    + Add page-wise configuration
+                  </Button>
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    Add separate rules for different page ranges, then save them together.
+                  </p>
+                </div>
               </>
             )}
             {editConfigPageRangeError && (
@@ -2098,6 +2404,22 @@ export default function OrderPreviewPage() {
           </div>
 
           <DialogFooter className="!flex !flex-row shrink-0 gap-2 border-t border-border pt-3">
+            {(editingCustomRanges || Boolean(
+              documents.find((doc) => doc.id === editingConfigDocumentId)?.print_config?.defaultPrintConfig
+            )) && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={savingDocumentConfig}
+                onClick={() => void resetEditedDocumentConfig()}
+                className="h-9 shrink-0 gap-1 px-2 text-xs font-semibold"
+                title={editingCustomRanges ? 'Clear custom rules and restore all pages' : 'Restore and save the original configuration'}
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                {editingCustomRanges ? 'Reset to All Pages' : 'Reset'}
+              </Button>
+            )}
             <Button
               type="button"
               variant="outline"
@@ -2118,7 +2440,9 @@ export default function OrderPreviewPage() {
               {savingDocumentConfig
                 ? 'Saving...'
                 : editingCustomRanges
-                  ? 'Save Range Rules'
+                  ? editConfigRangeRules.length === 0
+                    ? 'Restore All Pages'
+                    : 'Save Range Rules'
                   : 'Save Configuration'}
             </Button>
           </DialogFooter>
@@ -2401,6 +2725,15 @@ export default function OrderPreviewPage() {
                   const isCustom =
                     (cfg.pageRangeType === 'Custom Range' || customRanges.length > 0) &&
                     customRanges.length > 0;
+                  const rangeCopies = customRanges.map(
+                    (range) => Math.max(1, Number(range.copies) || Number(cfg.copies) || 1)
+                  );
+                  const uniqueRangeCopies = [...new Set(rangeCopies)];
+                  const copiesLabel = isCustom
+                    ? uniqueRangeCopies.length === 1
+                      ? uniqueRangeCopies[0]
+                      : 'Per range'
+                    : Math.max(1, Number(cfg.copies) || 1);
                   const isSelected = selectedConfigDocId === doc.id;
                   return (
                     <div
@@ -2445,7 +2778,7 @@ export default function OrderPreviewPage() {
                                             Pages {rng.fromPage}–{rng.toPage}:
                                           </span>
                                           <span className="ml-1 text-neutral-300">
-                                            {rng.printType || rng.color_mode || 'B&W'} • {rng.sides || rng.side || rng.duplex || 'Single Side'}
+                                            {rng.printType || rng.color_mode || 'B&W'} • {rng.sides || rng.side || rng.duplex || 'Single Side'} • {Number(rng.copies) || Number(cfg.copies) || 1} {(Number(rng.copies) || Number(cfg.copies) || 1) === 1 ? 'copy' : 'copies'}
                                           </span>
                                         </div>
                                       ))}
@@ -2477,7 +2810,7 @@ export default function OrderPreviewPage() {
                       )}
 
                       <div className="text-[10px] text-neutral-400 border-t border-neutral-800/80 pt-1.5 flex items-center justify-between">
-                        <span>Copies: <strong className="text-[12px] text-white">{cfg.copies || 1}</strong></span>
+                        <span>Copies: <strong className="text-[12px] text-white">{copiesLabel}</strong></span>
                         <span>Total Pages: <strong className="text-[12px] text-white">{doc.total_pages || 1}</strong></span>
                       </div>
 
@@ -2987,30 +3320,7 @@ export default function OrderPreviewPage() {
             ? `All Above (${documents.length} Docs)`
             : documents.find((d) => d.id === targetPropertyDocId)?.file_name || 'Selected Document'
         }
-        onApplySettings={(newProps) => {
-          if (newProps.printerId) {
-            const chosenPrinter = availablePrinters.find((p) => p.id === newProps.printerId);
-            if (chosenPrinter) {
-              setMatchedShopPrinter(chosenPrinter);
-            }
-          }
-          if (targetPropertyDocId === 'all') {
-            setDriverSettings(newProps);
-            const updatedMap: Record<string, Partial<PrinterDriverSettings>> = { all: newProps };
-            documents.forEach((d) => {
-              updatedMap[d.id] = newProps;
-            });
-            setDocDriverSettings(updatedMap);
-          } else {
-            setDocDriverSettings((prev) => ({
-              ...prev,
-              [targetPropertyDocId]: newProps,
-            }));
-          }
-          toast.success(
-            `Properties applied (${targetPropertyDocId === 'all' ? 'All Documents' : 'Selected Document'}): ${newProps.paperSize || 'Current Paper'}, ${newProps.orientation || 'Original Orientation'}, Scaling: ${newProps.scaling || 'fit'}.`
-          );
-        }}
+        onApplySettings={(newProps) => void applyPrinterProperties(newProps)}
       />
     </div>
   );
