@@ -504,8 +504,12 @@ export const PrinterPropertiesDialog: React.FC<PrinterPropertiesDialogProps> = (
                     className="w-full bg-[#121316] border border-neutral-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-primary font-mono"
                   >
                     <option value="Single Side">1-Sided (Single Side)</option>
-                    <option value="Back-to-Back">2-Sided (Flip on Long Edge / Book)</option>
-                    <option value="Tumble">2-Sided (Flip on Short Edge / Calendar)</option>
+                    <option value="Back-to-Back">
+                      2-Sided (Flip on {orientation === 'Landscape' ? 'Short' : 'Long'} Edge / Book)
+                    </option>
+                    <option value="Tumble">
+                      2-Sided (Flip on {orientation === 'Landscape' ? 'Long' : 'Short'} Edge / Calendar)
+                    </option>
                   </select>
                   {!currentPrinterObj?.is_duplex && duplex !== 'Single Side' && (
                     <p className="text-[11px] text-amber-400 flex items-center gap-1 font-mono">
@@ -515,7 +519,7 @@ export const PrinterPropertiesDialog: React.FC<PrinterPropertiesDialogProps> = (
                   )}
                   {orientation === 'Landscape' && duplex !== 'Single Side' && (
                     <p className="text-[11px] text-neutral-400">
-                      For landscape pages, choose the binding edge that keeps the back side upright. Short edge is commonly used for book-style turning.
+                      Landscape book-style printing flips on the short edge; calendar-style printing flips on the long edge.
                     </p>
                   )}
                 </div>

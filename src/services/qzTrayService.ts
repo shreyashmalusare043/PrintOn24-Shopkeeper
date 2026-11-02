@@ -2,7 +2,7 @@ import qz from 'qz-tray';
 import { clearQzAuthToken, getQzAuthToken } from '@/lib/qzAuth';
 import { createFunctionError } from '@/lib/supabaseFunctionError';
 import type { DetectedPrinter } from '@/types/shopkeeper';
-import { normalizeDuplexMode } from '@/utils/printSides';
+import { getQzDuplexOption } from '@/utils/printSides';
 
 export type { DetectedPrinter };
 
@@ -580,10 +580,11 @@ class QzTrayService {
 
       const copies = Number(payload.copies) || 1;
       const isColor = payload.colorMode === 'Color';
-      const duplexMode = normalizeDuplexMode(payload.driverProperties?.duplex ?? payload.duplex);
-      const duplexOption =
-        duplexMode === 'Single Side' ? false : duplexMode === 'Tumble' ? 'tumble' : 'duplex';
       const isLandscape = (payload.orientation || '').toLowerCase() === 'landscape';
+      const duplexOption = getQzDuplexOption(
+        payload.driverProperties?.duplex ?? payload.duplex,
+        payload.orientation
+      );
 
       // Item 1: Strict paper dimension mapping - Never force A4 when A3, Letter, Legal, etc. is requested
       const rawPaperKey = (payload.paperSize || '').trim().toUpperCase();

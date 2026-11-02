@@ -21,6 +21,18 @@ export function normalizeDuplexMode(sides: unknown): DuplexMode {
   return normalized.includes('short') || normalized.includes('tumble') ? 'Tumble' : 'Back-to-Back';
 }
 
+export function getQzDuplexOption(
+  sides: unknown,
+  orientation: 'Portrait' | 'Landscape' | string | undefined
+): false | 'duplex' | 'tumble' {
+  const mode = normalizeDuplexMode(sides);
+  if (mode === 'Single Side') return false;
+
+  const isLandscape = orientation?.toLowerCase() === 'landscape';
+  const useTumble = (mode === 'Tumble') !== isLandscape;
+  return useTumble ? 'tumble' : 'duplex';
+}
+
 export function normalizePrintSides(sides: unknown): 'Single Side' | 'Back-to-Back' {
   return isDuplexPrint(sides) ? 'Back-to-Back' : 'Single Side';
 }
