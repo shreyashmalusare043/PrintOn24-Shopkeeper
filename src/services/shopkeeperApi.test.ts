@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ShopPrinter } from '@/types/shopkeeper';
+import type { PrintOrder, ShopPrinter } from '@/types/shopkeeper';
 import { shopkeeperApi } from './shopkeeperApi';
 import { isDuplexPrint, normalizePrintSides } from '@/utils/printSides';
 
@@ -23,6 +23,46 @@ const monochromePrinter: ShopPrinter = {
   paper_sizes: ['A4'],
   paper_types: ['Standard 75 GSM'],
   is_default: true,
+};
+
+const colorA3Printer: ShopPrinter = {
+  ...monochromePrinter,
+  id: 'printer-color-a3',
+  name: 'Color A3 Printer',
+  usage_type: 'Color Only',
+  is_color: true,
+  paper_sizes: ['A3'],
+  capabilities: {
+    color: true,
+    bw: false,
+    single_side: true,
+    double_side: false,
+  },
+};
+
+const printOrder: PrintOrder = {
+  id: 'order-1',
+  order_number: '1',
+  user_id: 'user-1',
+  shop_id: 'shop-1',
+  shop_name: 'Shop',
+  token_number: '1',
+  document_name: 'document.pdf',
+  file_type: 'application/pdf',
+  total_pages: 1,
+  config_copies: 1,
+  config_page_size: 'A3',
+  config_paper_type: 'Standard',
+  config_print_type: 'Colour',
+  config_sides: 'Single Side',
+  subtotal: 0,
+  discount: 0,
+  platform_fee: 0,
+  grand_total: 0,
+  payment_method: 'cash',
+  payment_status: 'Completed',
+  order_status: 'Pending',
+  created_at: '2025-01-01T00:00:00.000Z',
 };
 
 describe('shopkeeperApi.matchPrinterToPrintConfig', () => {
@@ -49,6 +89,22 @@ describe('shopkeeperApi.matchPrinterToPrintConfig', () => {
     expect(result.reasons).toContain(
       'Requires Bond Paper paper type, which is unsupported by printer.'
     );
+  });
+
+  it('does not restrict paper types when none are selected for the printer', () => {
+    const printerWithoutPaperTypeRestrictions = {
+      ...monochromePrinter,
+      paper_types: [],
+    };
+
+    const result = shopkeeperApi.matchPrinterToPrintConfig(printerWithoutPaperTypeRestrictions, {
+      pageSize: 'A4',
+      paperType: 'Glossy',
+      printType: 'Black & White',
+      sides: 'Single Side',
+    });
+
+    expect(result).toEqual({ isCompatible: true, reasons: [] });
   });
 
   it('does not treat a single-side printer as compatible with a duplex document', () => {
@@ -83,6 +139,17 @@ describe('shopkeeperApi.matchPrinterToPrintConfig', () => {
     });
 
     expect(result.isCompatible).toBe(false);
+  });
+
+  it('uses order settings for values omitted from a partial document configuration', () => {
+    const result = shopkeeperApi.findCompatiblePrinterForOrder(
+      printOrder,
+      [colorA3Printer],
+      { sides: 'Single Side' }
+    );
+
+    expect(result.compatiblePrinter).toEqual(colorA3Printer);
+    expect(result.allEvaluations[0].reasons).toEqual([]);
   });
 });
 
